@@ -1,25 +1,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
+import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { resolveHubbleRoot } from "./hubble-config.ts";
+import { HubbleNotePicker } from "./hubble-ui.ts";
 import {
   appendToVaultFile,
   assertMarkdownPath,
   editVaultFile,
+  type HubblePath,
+  type HubbleVault,
   listMarkdownFiles,
   openVault,
   readVaultFile,
   resolveVaultPath,
   truncateOutput,
   writeNewVaultFile,
-  type HubblePath,
-  type HubbleVault,
 } from "./hubble-vault.ts";
-import { HubbleNotePicker } from "./hubble-ui.ts";
 
 const SearchParameters = Type.Object({
   query: Type.String({ description: "Case-insensitive text to find in Markdown notes" }),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "Maximum matching lines (default: 100)" })),
+  limit: Type.Optional(
+    Type.Integer({ minimum: 1, maximum: 500, description: "Maximum matching lines (default: 100)" })
+  ),
 });
 
 const ReadParameters = Type.Object({
@@ -40,7 +42,7 @@ const EditParameters = Type.Object({
     Type.Object({
       oldText: Type.String({ description: "Exact existing text; it must occur once" }),
       newText: Type.String({ description: "Replacement text" }),
-    }),
+    })
   ),
 });
 
@@ -64,14 +66,12 @@ function extractHubblePrefix(textBeforeCursor: string): string | undefined {
 }
 
 function attachmentValue(path: string): string {
-  if (path.includes(" ")) return `@"${path.replaceAll('"', '\\\"')}"`;
+  if (path.includes(" ")) return `@"${path.replaceAll('"', '\\"')}"`;
   return `@${path}`;
 }
 
 function autocompleteItems(files: HubblePath[], query: string): AutocompleteItem[] {
-  const filtered = query
-    ? fuzzyFilter(files, query, (file) => file.relative)
-    : files;
+  const filtered = query ? fuzzyFilter(files, query, (file) => file.relative) : files;
   return filtered.slice(0, MAX_AUTOCOMPLETE_ITEMS).map((file) => ({
     value: attachmentValue(file.absolute),
     label: `@hubble/${file.relative}`,
@@ -79,11 +79,7 @@ function autocompleteItems(files: HubblePath[], query: string): AutocompleteItem
   }));
 }
 
-async function selectNotes(
-  vault: HubbleVault,
-  query: string,
-  searchContents: boolean,
-): Promise<HubblePath[]> {
+async function selectNotes(vault: HubbleVault, query: string, searchContents: boolean): Promise<HubblePath[]> {
   const files = await listMarkdownFiles(vault);
   if (!query || !searchContents) {
     return query ? fuzzyFilter(files, query, (file) => file.relative) : files;
@@ -110,7 +106,10 @@ function parseHubbleCommand(args: string): { query: string; searchContents: bool
 }
 
 function unquote(value: string): string {
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
     return value.slice(1, -1);
   }
   return value;
@@ -125,13 +124,17 @@ function parseNewCommand(args: string): { title: string; folder?: string } | und
   const folderMatch = remainder.match(/(?:^|\s)--folder(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/u);
   if (folderMatch?.index !== undefined) {
     folder = folderMatch[1] ?? folderMatch[2] ?? folderMatch[3] ?? "";
-    remainder = `${remainder.slice(0, folderMatch.index)} ${remainder.slice(folderMatch.index + folderMatch[0].length)}`.trim();
+    remainder =
+      `${remainder.slice(0, folderMatch.index)} ${remainder.slice(folderMatch.index + folderMatch[0].length)}`.trim();
   }
 
   return { title: unquote(remainder), folder };
 }
 
-function appendEditorAttachment(ctx: { ui: { getEditorText(): string; setEditorText(text: string): void } }, path: string): void {
+function appendEditorAttachment(
+  ctx: { ui: { getEditorText(): string; setEditorText(text: string): void } },
+  path: string
+): void {
   const current = ctx.ui.getEditorText().trimEnd();
   ctx.ui.setEditorText(`${current}${current ? " " : ""}${attachmentValue(path)}`);
 }
@@ -151,7 +154,7 @@ async function handleNewNote(
   args: string,
   ctx: HubbleCommandContext,
   pi: ExtensionAPI,
-  getRoot: () => Promise<string>,
+  getRoot: () => Promise<string>
 ): Promise<void> {
   if (!ctx.hasUI) {
     ctx.ui.notify("/hubble new requires interactive UI mode.", "warning");
@@ -181,9 +184,11 @@ async function handleNewNote(
       return;
     }
 
-    const folderInstruction = folder ? ` Use the vault-relative folder ${JSON.stringify(folder)}.` : " Use the vault root.";
+    const folderInstruction = folder
+      ? ` Use the vault-relative folder ${JSON.stringify(folder)}.`
+      : " Use the vault root.";
     pi.sendUserMessage(
-      `Create a new Hubble note for the current conversation. Choose a concise, useful title yourself and write a clear Markdown body summarizing the relevant investigation.${folderInstruction} Use hubble_create, do not overwrite an existing note, and report the created path when finished.`,
+      `Create a new Hubble note for the current conversation. Choose a concise, useful title yourself and write a clear Markdown body summarizing the relevant investigation.${folderInstruction} Use hubble_create, do not overwrite an existing note, and report the created path when finished.`
     );
     ctx.ui.notify("Asked the agent to create a Hubble note and choose its title.", "info");
     return;
@@ -267,8 +272,9 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      const selected = await ctx.ui.custom<HubblePath | undefined>((tui, theme, keybindings, done) =>
-        new HubbleNotePicker(tui, theme, keybindings, notes, searchContents ? "" : query, done),
+      const selected = await ctx.ui.custom<HubblePath | undefined>(
+        (tui, theme, keybindings, done) =>
+          new HubbleNotePicker(tui, theme, keybindings, notes, searchContents ? "" : query, done)
       );
       if (selected) {
         appendEditorAttachment(ctx, selected.absolute);
@@ -280,7 +286,8 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hubble_search",
     label: "Hubble Search",
-    description: "Search Markdown notes in the configured Hubble vault. Results are limited and truncated to 50KB or 2000 lines.",
+    description:
+      "Search Markdown notes in the configured Hubble vault. Results are limited and truncated to 50KB or 2000 lines.",
     promptSnippet: "Search Markdown notes in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_search before hubble_read when you need to discover a note or locate text in the vault.",
@@ -322,7 +329,8 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hubble_read",
     label: "Hubble Read",
-    description: "Read a Markdown note from the configured Hubble vault. The path is vault-relative; output is truncated to 50KB or 2000 lines.",
+    description:
+      "Read a Markdown note from the configured Hubble vault. The path is vault-relative; output is truncated to 50KB or 2000 lines.",
     promptSnippet: "Read a Markdown note from the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_read for notes discovered with hubble_search; pass the vault-relative path returned by Hubble tools.",
@@ -335,9 +343,7 @@ export default function (pi: ExtensionAPI): void {
       const content = await readVaultFile(path);
       const allLines = content.split("\n");
       const start = (params.offset ?? 1) - 1;
-      const selected = params.limit === undefined
-        ? allLines.slice(start)
-        : allLines.slice(start, start + params.limit);
+      const selected = params.limit === undefined ? allLines.slice(start) : allLines.slice(start, start + params.limit);
       const output = await truncateOutput(selected.join("\n"));
 
       return noteResult(`Path: ${path.relative}\n\n${output.text}`, {
@@ -354,7 +360,8 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: "hubble_create",
     label: "Hubble Create",
-    description: "Create a new Markdown note in the configured Hubble vault without overwriting an existing note. Filenames are generated from the title.",
+    description:
+      "Create a new Markdown note in the configured Hubble vault without overwriting an existing note. Filenames are generated from the title.",
     promptSnippet: "Create a new Markdown note in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
@@ -381,7 +388,10 @@ export default function (pi: ExtensionAPI): void {
       const path = await resolveVaultPath(vault, params.path);
       assertMarkdownPath(path);
       await editVaultFile(path, params.edits);
-      return noteResult(`Updated Hubble note: ${path.relative}`, { path: path.relative, editCount: params.edits.length });
+      return noteResult(`Updated Hubble note: ${path.relative}`, {
+        path: path.relative,
+        editCount: params.edits.length,
+      });
     },
   });
 

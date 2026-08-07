@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  applyExactEdits,
   appendToVaultFile,
+  applyExactEdits,
   assertMarkdownPath,
   createVault,
   editVaultFile,
@@ -56,28 +56,24 @@ test("creates notes in optional folders and keeps folders inside the vault", asy
   assert.equal(note.relative, "research/incident response/nested-note.md");
   assert.equal(await readFile(note.absolute, "utf8"), "# Nested Note\n\nbody");
 
-  await assert.rejects(
-    () => writeNewVaultFile(vault, "Escape", "", "../outside"),
-    /escapes the vault/,
-  );
+  await assert.rejects(() => writeNewVaultFile(vault, "Escape", "", "../outside"), /escapes the vault/);
   await symlink(outside, join(root, "external"));
-  await assert.rejects(
-    () => writeNewVaultFile(vault, "Escape", "", "external"),
-    /escapes the vault through a symlink/,
-  );
+  await assert.rejects(() => writeNewVaultFile(vault, "Escape", "", "external"), /escapes the vault through a symlink/);
 });
 
 test("requires unique, non-overlapping exact edits", () => {
   assert.equal(applyExactEdits("one two one", [{ oldText: "two", newText: "TWO" }]), "one TWO one");
+  assert.throws(() => applyExactEdits("one one", [{ oldText: "one", newText: "ONE" }], "note.md"), /not unique/);
   assert.throws(
-    () => applyExactEdits("one one", [{ oldText: "one", newText: "ONE" }], "note.md"),
-    /not unique/,
-  );
-  assert.throws(
-    () => applyExactEdits("abcdef", [
-      { oldText: "abc", newText: "A" },
-      { oldText: "cde", newText: "B" },
-    ], "note.md"),
-    /overlap/,
+    () =>
+      applyExactEdits(
+        "abcdef",
+        [
+          { oldText: "abc", newText: "A" },
+          { oldText: "cde", newText: "B" },
+        ],
+        "note.md"
+      ),
+    /overlap/
   );
 });

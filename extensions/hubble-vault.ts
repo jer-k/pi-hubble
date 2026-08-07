@@ -1,26 +1,7 @@
-import {
-  access,
-  mkdir,
-  mkdtemp,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  stat,
-  writeFile,
-} from "node:fs/promises";
-import { constants } from "node:fs";
+import { constants, type Dirent } from "node:fs";
+import { access, mkdir, mkdtemp, open, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import {
-  basename,
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -236,7 +217,7 @@ export async function writeNewVaultFile(
   vault: HubbleVault,
   title: string,
   content: string,
-  folder = "",
+  folder = ""
 ): Promise<HubblePath> {
   const trimmedTitle = title.trim();
   if (!trimmedTitle) throw new Error("title must not be empty.");
@@ -293,7 +274,7 @@ export async function listMarkdownFiles(vault: HubbleVault): Promise<HubblePath[
   const files: HubblePath[] = [];
 
   async function visit(directory: string): Promise<void> {
-    let entries;
+    let entries: Dirent[];
     try {
       entries = await readdir(directory, { withFileTypes: true });
     } catch (error) {

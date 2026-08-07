@@ -1,12 +1,12 @@
 import {
   Container,
+  type Focusable,
   fuzzyFilter,
   Input,
+  type SelectItem,
   SelectList,
   Spacer,
   Text,
-  type Focusable,
-  type SelectItem,
 } from "@earendil-works/pi-tui";
 import type { HubblePath } from "./hubble-vault.ts";
 
@@ -43,7 +43,7 @@ export class HubbleNotePicker extends Container implements Focusable {
     keybindings: HubbleKeybindings,
     notes: HubblePath[],
     initialQuery: string,
-    onSelect: (note: HubblePath | undefined) => void,
+    onSelect: (note: HubblePath | undefined) => void
   ) {
     super();
     this.tui = tui;
@@ -98,9 +98,7 @@ export class HubbleNotePicker extends Container implements Focusable {
 
   private updateFilter(): void {
     const query = this.search.getValue().trim();
-    this.filteredNotes = query
-      ? fuzzyFilter(this.notes, query, (note) => note.relative)
-      : this.notes;
+    this.filteredNotes = query ? fuzzyFilter(this.notes, query, (note) => note.relative) : this.notes;
     this.listContainer.clear();
     this.list = this.createList();
     this.listContainer.addChild(this.list);
@@ -108,8 +106,9 @@ export class HubbleNotePicker extends Container implements Focusable {
   }
 
   handleInput(data: string): void {
-    const isNavigation = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"]
-      .some((key) => this.keybindings.matches(data, key));
+    const isNavigation = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"].some((key) =>
+      this.keybindings.matches(data, key)
+    );
 
     if (isNavigation) {
       this.list.handleInput(data);
