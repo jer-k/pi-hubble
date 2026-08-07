@@ -202,7 +202,7 @@ async function handleNewNote(
 
 export default function (pi: ExtensionAPI): void {
   pi.registerFlag("hubble-dir", {
-    description: "Hubble vault root (overrides HUBBLE_DIR and hubble.json)",
+    description: "Hubble vault root for this session (overrides Hubble config)",
     type: "string",
   });
 

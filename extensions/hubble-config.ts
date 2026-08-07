@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
-const DEFAULT_ROOT = "~/Hubble";
+const CONFIG_FILENAME = "hubble.json";
 
 function expandPath(value: string): string {
   const trimmed = value.trim();
@@ -24,35 +24,53 @@ function getStringFlag(value: unknown): string | undefined {
   return value;
 }
 
-/** Resolve the vault root using the documented precedence order. */
-export async function resolveHubbleRoot(cliValue: unknown): Promise<string> {
-  const cliRoot = getStringFlag(cliValue);
-  if (cliRoot) return expandPath(cliRoot);
-
-  const environmentRoot = process.env.HUBBLE_DIR?.trim();
-  if (environmentRoot) return expandPath(environmentRoot);
-
-  const configPath = resolve(getAgentDir(), "hubble.json");
-  let configRoot: unknown;
+async function readConfiguredRoot(configPath: string): Promise<string | undefined> {
+  let source: string;
   try {
-    const config = JSON.parse(await readFile(configPath, "utf8")) as unknown;
-    if (typeof config !== "object" || config === null || Array.isArray(config)) {
-      throw new Error("the config must be a JSON object");
-    }
-    configRoot = (config as { root?: unknown }).root;
+    source = await readFile(configPath, "utf8");
   } catch (error) {
-    if (isMissingFileError(error)) {
-      return expandPath(DEFAULT_ROOT);
-    }
+    if (isMissingFileError(error)) return undefined;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not read ${configPath}: ${message}`);
   }
 
-  if (configRoot === undefined) return expandPath(DEFAULT_ROOT);
-  if (typeof configRoot !== "string") {
+  let config: unknown;
+  try {
+    config = JSON.parse(source) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not read ${configPath}: ${message}`);
+  }
+
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+    throw new Error(`${configPath}: the config must be a JSON object.`);
+  }
+
+  const root = (config as { root?: unknown }).root;
+  if (root === undefined) return undefined;
+  if (typeof root !== "string") {
     throw new Error(`${configPath}: "root" must be a string.`);
   }
-  return expandPath(configRoot);
+  return root;
+}
+
+/** Resolve global config, then local config, with the CLI flag taking precedence. */
+export async function resolveHubbleRoot(cliValue: unknown): Promise<string> {
+  const cliRoot = getStringFlag(cliValue);
+  if (cliRoot !== undefined) return expandPath(cliRoot);
+
+  const globalPath = resolve(getAgentDir(), CONFIG_FILENAME);
+  const localPath = resolve(process.cwd(), CONFIG_DIR_NAME, CONFIG_FILENAME);
+  const globalRoot = await readConfiguredRoot(globalPath);
+  const localRoot = await readConfiguredRoot(localPath);
+  const configuredRoot = localRoot ?? globalRoot;
+
+  if (configuredRoot === undefined) {
+    throw new Error(
+      `Hubble vault is not configured. Set "root" in ${globalPath} or ${localPath}, or pass --hubble-dir /path/to/vault.`
+    );
+  }
+  return expandPath(configuredRoot);
 }
 
 function isMissingFileError(error: unknown): boolean {

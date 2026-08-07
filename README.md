@@ -1,56 +1,96 @@
 # pi-hubble
 
-Pi tools for searching and editing a Markdown vault such as `~/Hubble`.
+Pi extension for searching, reading, and editing notes in [Hubble.md](https://hubble.md).
 
-## Development
+## Install
+
+From GitHub:
+
+```bash
+pi install git:github.com/jer-k/pi-hubble
+```
+
+For a temporary run from a local checkout:
+
+```bash
+pi -e /path/to/pi-hubble
+```
+
+For development, load the extension directly:
 
 ```bash
 pi -e ./extensions/hubble.ts
 ```
 
-The package can be installed globally with:
-
-```bash
-pi install /path/to/pi-hubble
-```
-
 ## Vault configuration
 
-Configuration is resolved in this order:
+Hubble reads the vault root in this order:
 
-1. `--hubble-dir /path/to/vault`
-2. `HUBBLE_DIR=/path/to/vault`
-3. `~/.pi/agent/hubble.json` (or `$PI_CODING_AGENT_DIR/hubble.json`)
-4. `~/Hubble`
+1. Global config: `~/.pi/agent/hubble.json` (or `$PI_CODING_AGENT_DIR/hubble.json`)
+2. Local config: `.pi/hubble.json`
+3. `--hubble-dir /path/to/vault`
 
-Example `hubble.json`:
+The latest configured value wins. Example config:
 
 ```json
 {
-  "root": "~/Hubble"
+  "root": "/path/to/vault"
 }
 ```
 
+There is no default vault. If no config or command-line flag provides a root,
+the extension reports a configuration error. The `root` value may use `~` and
+may be an absolute or relative path. Relative paths are resolved from Pi's
+current working directory.
+
 ## Tools
 
-- `hubble_search(query, limit?)`
-- `hubble_read(path, offset?, limit?)`
-- `hubble_create(title, content, folder?)`
-- `hubble_edit(path, edits)`
-- `hubble_append(path, content)`
+The extension registers these Pi tools:
 
-All document paths are relative to the configured vault and must point to Markdown files. Writes are serialized with Pi's file mutation queue, creation is non-overwriting, and paths are checked against traversal and symlink escapes.
+- `hubble_search(query, limit?)` searches note contents case-insensitively and
+  returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
+- `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown path.
+  `offset` is a 1-based line number; `limit` controls the number of lines.
+- `hubble_create(title, content, folder?)` creates a new note, optionally in a
+  vault-relative folder.
+- `hubble_edit(path, edits)` applies exact, unique, non-overlapping text
+  replacements.
+- `hubble_append(path, content)` appends Markdown to an existing note.
+
+All document paths are relative to the configured vault and must point to
+Markdown files. Search and read output is limited to 50 KB or 2,000 lines; when
+output is truncated, the complete result is saved to a temporary file.
+
+`hubble_create` writes a `# Title` heading, converts the title into a Markdown
+filename slug, and never overwrites an existing note. If the slug already
+exists, it creates a numbered filename such as `my-note-2.md`.
+
+Writes are serialized with Pi's file mutation queue. Paths are checked against
+path traversal and symlink escapes, and Markdown discovery recursively scans
+the vault while skipping symlinks.
 
 ## Interactive discovery
 
-When running interactively, the extension also provides:
-
 - `@hubble/` autocomplete for attaching a vault note to the prompt
 - `/hubble` to browse and attach a note
+- `/hubble <query>` to filter note filenames
+- `/hubble search <query>` to search note contents
+- `/hubble open <query>` to filter note filenames explicitly
 - `/hubble new [title] [--folder <folder>]` to create and attach a blank note
-  - Omitting the title prompts for one; leaving it blank asks the agent to choose a title and draft the note
-  - Omitting the folder prompts for an optional vault-relative folder
-- `/hubble search <query>` to find notes containing text
-- `/hubble open <query>` to filter note filenames
 
-After selecting a note, its absolute path is inserted as a normal Pi `@` file reference.
+`/hubble new` prompts for a title and an optional vault-relative folder. If the
+title is left blank, the agent chooses a title and drafts the note using
+`hubble_create` when it is idle.
+
+After selecting a note, its absolute path is inserted as a normal Pi `@` file
+reference, so the note is attached to the current prompt.
+
+## Development
+
+Run the test suite and checks with:
+
+```bash
+npm test
+npm run typecheck
+npm run lint
+```

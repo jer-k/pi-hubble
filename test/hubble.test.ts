@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import {
   appendToVaultFile,
@@ -11,6 +11,7 @@ import {
   resolveVaultPath,
   writeNewVaultFile,
 } from "../extensions/hubble-vault.ts";
+import { resolveHubbleRoot } from "../extensions/hubble-config.ts";
 
 test("keeps paths inside the vault and rejects symlink escapes", async () => {
   const parent = await mkdtemp(join(tmpdir(), "pi-hubble-test-"));
@@ -75,4 +76,42 @@ test("requires unique, non-overlapping exact edits", () => {
       "note.md"
     )
   ).toThrow(/overlap/);
+});
+
+test("uses local config over global config and the CLI as an escape hatch", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-config-test-"));
+  const originalCwd = process.cwd();
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    process.chdir(workspace);
+    process.env.PI_CODING_AGENT_DIR = join(workspace, "global");
+    await mkdir(join(workspace, ".pi"), { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+    await writeFile(join(workspace, "global", "hubble.json"), '{"root":"global-vault"}', "utf8");
+    await writeFile(join(workspace, ".pi", "hubble.json"), '{"root":"local-vault"}', "utf8");
+
+    expect(await resolveHubbleRoot(undefined)).toBe(resolve(process.cwd(), "local-vault"));
+    expect(await resolveHubbleRoot("cli-vault")).toBe(resolve(process.cwd(), "cli-vault"));
+  } finally {
+    process.chdir(originalCwd);
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  }
+});
+
+test("requires a configured vault when no override is provided", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-config-test-"));
+  const originalCwd = process.cwd();
+  const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+  try {
+    process.chdir(workspace);
+    process.env.PI_CODING_AGENT_DIR = join(workspace, "missing-global");
+    await expect(resolveHubbleRoot(undefined)).rejects.toThrow(/vault is not configured/);
+  } finally {
+    process.chdir(originalCwd);
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+  }
 });
