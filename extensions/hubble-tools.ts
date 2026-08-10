@@ -1,43 +1,45 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Result } from "better-result";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  formatSize,
+  truncateHead,
+  withFileMutationQueue,
+} from "@earendil-works/pi-coding-agent";
+import { Result, type Result as ResultType } from "better-result";
 import { Type } from "typebox";
-import {
-  type GetRoot,
-  getToolVault,
-  noteResult,
-  SearchQueryError,
-  throwCreateToolError,
-  throwHubbleError,
-  throwIfAborted,
-  unwrapToolResult,
-} from "./hubble-boundary.ts";
-import {
-  appendToVaultFile,
-  assertMarkdownPath,
-  editVaultFile,
-  listMarkdownFiles,
-  readVaultFile,
-  resolveVaultPath,
-  truncateOutput,
-  writeNewVaultFile,
-} from "./hubble-vault.ts";
+import type { GetVault } from "./hubble-config.ts";
+import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
+import type { NoteSearchResult } from "./hubble-vault.ts";
 
-const SearchParameters = Type.Object({
+export interface TruncatedOutput {
+  text: string;
+  truncated: boolean;
+  fullOutputPath?: string;
+}
+
+export const SearchParameters = Type.Object({
   query: Type.String({ description: "Case-insensitive text to find in Markdown notes" }),
   limit: Type.Optional(
     Type.Integer({ minimum: 1, maximum: 500, description: "Maximum matching lines (default: 100)" })
   ),
 });
+
 const ReadParameters = Type.Object({
   path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
   offset: Type.Optional(Type.Integer({ minimum: 1, description: "1-based starting line" })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000, description: "Maximum lines to return" })),
 });
+
 const CreateParameters = Type.Object({
   title: Type.String({ description: "Note title; used for the Markdown heading and filename slug" }),
   content: Type.String({ description: "Markdown body, without the title heading" }),
   folder: Type.Optional(Type.String({ description: "Optional vault-relative folder for the new note" })),
 });
+
 const EditParameters = Type.Object({
   path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
   edits: Type.Array(
@@ -47,12 +49,68 @@ const EditParameters = Type.Object({
     })
   ),
 });
+
 const AppendParameters = Type.Object({
   path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
   content: Type.String({ description: "Markdown to append to the note" }),
 });
 
-export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
+function unwrap<T, E extends HubbleFailure>(result: ResultType<T, E>): T {
+  if (Result.isError(result)) throwHubbleError(result.error);
+  return result.value;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
+}
+
+function noteResult(text: string, details: Record<string, unknown> = {}) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+
+/** Model-context policy belongs to the tool adapter, not the Vault. */
+export async function truncateOutput(output: string): Promise<ResultType<TruncatedOutput, OutputPersistenceError>> {
+  const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+  if (!truncation.truncated) return Result.ok({ text: truncation.content, truncated: false });
+
+  const directory = await Result.tryPromise({
+    try: () => mkdtemp(join(tmpdir(), "pi-hubble-")),
+    catch: (cause) => new OutputPersistenceError({ cause, message: "Could not persist the full Hubble tool output." }),
+  });
+
+  if (Result.isError(directory)) return directory;
+
+  const fullOutputPath = join(directory.value, "output.txt");
+  const persisted = await withFileMutationQueue(fullOutputPath, () =>
+    Result.tryPromise({
+      try: () => writeFile(fullOutputPath, output, "utf8"),
+      catch: (cause) =>
+        new OutputPersistenceError({ cause, message: "Could not persist the full Hubble tool output." }),
+    })
+  );
+
+  if (Result.isError(persisted)) return persisted;
+
+  return Result.ok({
+    text: `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`,
+    truncated: true,
+    fullOutputPath,
+  });
+}
+
+function formatSearchResults(results: NoteSearchResult[], limit: number): { lines: string[]; count: number } {
+  const lines: string[] = [];
+  for (const result of results) {
+    for (const match of result.matches) {
+      lines.push(`${result.note.relative}:${match.line}: ${match.text.trim()}`);
+
+      if (lines.length >= limit) return { lines, count: lines.length };
+    }
+  }
+  return { lines, count: lines.length };
+}
+
+export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerTool({
     name: "hubble_search",
     label: "Hubble Search",
@@ -66,29 +124,23 @@ export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
     parameters: SearchParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      const vault = await getToolVault(getRoot, ctx);
-      const query = params.query.trim().toLowerCase();
-      if (!query) throwHubbleError(new SearchQueryError({ message: "query must not be empty." }));
-      const files = unwrapToolResult(await listMarkdownFiles(vault));
-      const matches: string[] = [];
-      const maxMatches = params.limit ?? 100;
-      for (const file of files) {
-        throwIfAborted(signal);
-        const content = unwrapToolResult(await readVaultFile(file));
-        const lines = content.split("\n");
-        for (let index = 0; index < lines.length; index++) {
-          if (lines[index].toLowerCase().includes(query)) {
-            matches.push(`${file.relative}:${index + 1}: ${lines[index].trim()}`);
-            if (matches.length >= maxMatches) break;
-          }
-        }
-        if (matches.length >= maxMatches) break;
-      }
-      if (matches.length === 0) return noteResult("No Hubble notes matched the query.", { query, matchCount: 0 });
-      const output = unwrapToolResult(await truncateOutput(matches.join("\n")));
+
+      const vault = await getVault(ctx);
+      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      const searched = await vault.value.search(params.query, signal);
+      const results = unwrap(searched);
+      const formatted = formatSearchResults(results, params.limit ?? 100);
+      if (formatted.count === 0)
+        return noteResult("No Hubble notes matched the query.", {
+          query: params.query.trim().toLowerCase(),
+          matchCount: 0,
+        });
+      const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
+
       return noteResult(output.text, {
-        query,
-        matchCount: matches.length,
+        query: params.query.trim().toLowerCase(),
+        matchCount: formatted.count,
         truncated: output.truncated,
         fullOutputPath: output.fullOutputPath,
       });
@@ -107,16 +159,18 @@ export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
     parameters: ReadParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      const vault = await getToolVault(getRoot, ctx);
-      const path = unwrapToolResult(await resolveVaultPath(vault, params.path));
-      unwrapToolResult(assertMarkdownPath(path));
-      const content = unwrapToolResult(await readVaultFile(path));
-      const allLines = content.split("\n");
+
+      const vault = await getVault(ctx);
+      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      const read = unwrap(await vault.value.read(params.path));
+      const allLines = read.content.split("\n");
       const start = (params.offset ?? 1) - 1;
       const selected = params.limit === undefined ? allLines.slice(start) : allLines.slice(start, start + params.limit);
-      const output = unwrapToolResult(await truncateOutput(selected.join("\n")));
-      return noteResult(`Path: ${path.relative}\n\n${output.text}`, {
-        path: path.relative,
+      const output = unwrap(await truncateOutput(selected.join("\n")));
+
+      return noteResult(`Path: ${read.note.relative}\n\n${output.text}`, {
+        path: read.note.relative,
         startLine: start + 1,
         returnedLines: selected.length,
         totalLines: allLines.length,
@@ -138,10 +192,12 @@ export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
     parameters: CreateParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      const vault = await getToolVault(getRoot, ctx);
-      const result = await writeNewVaultFile(vault, params.title, params.content, params.folder);
-      if (Result.isError(result)) throwCreateToolError(result.error);
-      return noteResult(`Created Hubble note: ${result.value.relative}`, { path: result.value.relative });
+
+      const vault = await getVault(ctx);
+      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      const created = unwrap(await vault.value.create(params.title, params.content, params.folder));
+      return noteResult(`Created Hubble note: ${created.relative}`, { path: created.relative });
     },
   });
 
@@ -156,12 +212,13 @@ export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
     parameters: EditParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      const vault = await getToolVault(getRoot, ctx);
-      const path = unwrapToolResult(await resolveVaultPath(vault, params.path));
-      unwrapToolResult(assertMarkdownPath(path));
-      unwrapToolResult(await editVaultFile(path, params.edits));
-      return noteResult(`Updated Hubble note: ${path.relative}`, {
-        path: path.relative,
+
+      const vault = await getVault(ctx);
+      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      const edited = unwrap(await vault.value.edit(params.path, params.edits));
+      return noteResult(`Updated Hubble note: ${edited.relative}`, {
+        path: edited.relative,
         editCount: params.edits.length,
       });
     },
@@ -178,11 +235,12 @@ export function registerHubbleTools(pi: ExtensionAPI, getRoot: GetRoot): void {
     parameters: AppendParameters,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
-      const vault = await getToolVault(getRoot, ctx);
-      const path = unwrapToolResult(await resolveVaultPath(vault, params.path));
-      unwrapToolResult(assertMarkdownPath(path));
-      unwrapToolResult(await appendToVaultFile(path, params.content));
-      return noteResult(`Appended to Hubble note: ${path.relative}`, { path: path.relative });
+
+      const vault = await getVault(ctx);
+      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      const appended = unwrap(await vault.value.append(params.path, params.content));
+      return noteResult(`Appended to Hubble note: ${appended.relative}`, { path: appended.relative });
     },
   });
 }

@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Result } from "better-result";
 import { registerHubbleAutocomplete } from "./hubble-autocomplete.ts";
-import type { GetRoot, RootResult } from "./hubble-boundary.ts";
 import { registerHubbleCommand } from "./hubble-command.ts";
-import { resolveHubbleRoot } from "./hubble-config.ts";
+import { type GetVault, resolveHubbleRoot } from "./hubble-config.ts";
 import { registerHubbleTools } from "./hubble-tools.ts";
+import { openVault } from "./hubble-vault.ts";
 
-export { throwCreateToolError } from "./hubble-boundary.ts";
+export type { GetVault, RootContext } from "./hubble-config.ts";
 
 export default function (pi: ExtensionAPI): void {
   pi.registerFlag("hubble-dir", {
@@ -14,30 +14,29 @@ export default function (pi: ExtensionAPI): void {
     type: "string",
   });
 
-  // Pi applies CLI extension flag values after loading extension factories, so
-  // resolve the root lazily when the first operation runs. Failed resolution is
-  // deliberately not cached so configuration can be fixed during a session.
-  let rootPromise: Promise<RootResult> | undefined;
-  const getRoot: GetRoot = (context) => {
-    rootPromise ??= resolveHubbleRoot(
-      pi.getFlag("hubble-dir"),
-      context.cwd,
-      context.isProjectTrusted()
-    ).then(
-      (result) => {
-        if (Result.isError(result)) rootPromise = undefined;
-        return result;
-      },
-      (cause) => {
-        rootPromise = undefined;
-        throw cause;
-      }
-    );
-
-    return rootPromise;
+  // Configuration and Vault construction are lazy. A successful Vault is reused
+  // for the session; failed attempts are not cached so users can recover.
+  let vaultPromise: ReturnType<GetVault> | undefined;
+  const getVault: GetVault = (context) => {
+    vaultPromise ??= resolveHubbleRoot(pi.getFlag("hubble-dir"), context.cwd, context.isProjectTrusted())
+      .then(async (root) => {
+        if (Result.isError(root)) return root;
+        return openVault(root.value);
+      })
+      .then(
+        (result) => {
+          if (result.status === "error") vaultPromise = undefined;
+          return result;
+        },
+        (cause) => {
+          vaultPromise = undefined;
+          throw cause;
+        }
+      );
+    return vaultPromise;
   };
 
-  registerHubbleAutocomplete(pi, getRoot);
-  registerHubbleCommand(pi, getRoot);
-  registerHubbleTools(pi, getRoot);
+  registerHubbleAutocomplete(pi, getVault);
+  registerHubbleCommand(pi, getVault);
+  registerHubbleTools(pi, getVault);
 }

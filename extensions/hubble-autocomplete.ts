@@ -1,8 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result } from "better-result";
-import { attachmentValue, type GetRoot, getVault } from "./hubble-boundary.ts";
-import { type HubblePath, listMarkdownFiles } from "./hubble-vault.ts";
+import type { GetVault } from "./hubble-config.ts";
+import { attachmentValue } from "./hubble-ui.ts";
+import type { NoteReference } from "./hubble-vault.ts";
 
 const MAX_AUTOCOMPLETE_ITEMS = 50;
 
@@ -10,7 +11,7 @@ function extractHubblePrefix(textBeforeCursor: string): string | undefined {
   return textBeforeCursor.match(/(?:^|[ \t])(@hubble(?:\/[^\s]*)?)$/u)?.[1];
 }
 
-function autocompleteItems(files: HubblePath[], query: string): AutocompleteItem[] {
+function autocompleteItems(files: NoteReference[], query: string): AutocompleteItem[] {
   const filtered = query ? fuzzyFilter(files, query, (file) => file.relative) : files;
   return filtered.slice(0, MAX_AUTOCOMPLETE_ITEMS).map((file) => ({
     value: attachmentValue(file.absolute),
@@ -19,7 +20,7 @@ function autocompleteItems(files: HubblePath[], query: string): AutocompleteItem
   }));
 }
 
-export function registerHubbleAutocomplete(pi: ExtensionAPI, getRoot: GetRoot): void {
+export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault): void {
   pi.on("session_start", (_event, ctx) => {
     if (!ctx.hasUI) return;
     ctx.ui.addAutocompleteProvider((current) => ({
@@ -29,11 +30,14 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getRoot: GetRoot): 
         const prefix = extractHubblePrefix(beforeCursor);
         if (!prefix) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-        const vault = await getVault(getRoot, ctx);
+        if (options.signal.aborted) return { prefix, items: [] };
+
+        const vault = await getVault(ctx);
         if (Result.isError(vault) || options.signal.aborted) return { prefix, items: [] };
 
         const query = prefix.startsWith("@hubble/") ? prefix.slice("@hubble/".length) : "";
-        const files = await listMarkdownFiles(vault.value);
+        const files = await vault.value.list();
+        // Autocomplete deliberately hides expected Vault failures. Defects still throw.
         if (Result.isError(files)) return { prefix, items: [] };
 
         return { prefix, items: autocompleteItems(files.value, query) };

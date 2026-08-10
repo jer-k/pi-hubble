@@ -72,10 +72,8 @@ the vault while skipping symlinks.
 ## Interactive discovery
 
 - `@hubble/` autocomplete for attaching a vault note to the prompt
-- `/hubble` to browse and attach a note
-- `/hubble <query>` to filter note filenames
+- `/hubble find <query>` to find note filenames explicitly
 - `/hubble search <query>` to search note contents
-- `/hubble open <query>` to filter note filenames explicitly
 - `/hubble new [title] [--folder <folder>]` to create and attach a blank note
 
 `/hubble new` prompts for a title and an optional vault-relative folder. If the

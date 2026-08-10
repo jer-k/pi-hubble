@@ -9,20 +9,28 @@ import {
   type DiscoveryError,
   type EditNoteError,
   EditValidationError,
-  NoteAppendValidationError,
   NoteNotFoundError,
   NoteReadError,
   type NoteReadResult,
-  NoteTitleError,
+  NoteValidationError,
   NoteWriteError,
   VaultDiscoveryError,
-  VaultRootTypeError,
 } from "./hubble-errors.ts";
-import { resolveVaultDirectory } from "./hubble-paths.ts";
-import type { HubbleEdit, HubblePath, HubbleVault } from "./hubble-types.ts";
+import { type HubblePath, resolveVaultDirectory, type VaultRoot } from "./hubble-paths.ts";
+
+export interface HubbleEdit {
+  oldText: string;
+  newText: string;
+}
+
+export type NoteReference = HubblePath;
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function isExistingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
 
 export function slugifyTitle(title: string): string {
@@ -41,45 +49,29 @@ export function applyExactEditsResult(
   edits: HubbleEdit[],
   path: string
 ): ResultType<string, EditValidationError> {
-  if (edits.length === 0) {
+  if (edits.length === 0)
     return Result.err(new EditValidationError({ path, reason: "empty", message: "At least one edit is required." }));
-  }
 
   const matches: Array<HubbleEdit & { index: number; start: number; end: number }> = [];
   for (let index = 0; index < edits.length; index++) {
     const edit = edits[index];
     if (!edit.oldText) {
       return Result.err(
-        new EditValidationError({
-          path,
-          reason: "empty",
-          message: `edits[${index}].oldText must not be empty in ${path}.`,
-        })
+        new EditValidationError({ path, reason: "empty", message: `edits[${index}].oldText must not be empty.` })
       );
     }
-
     const first = content.indexOf(edit.oldText);
     if (first === -1) {
       return Result.err(
-        new EditValidationError({
-          path,
-          reason: "missing",
-          message: `Could not find edits[${index}] in ${path}. oldText must match exactly.`,
-        })
+        new EditValidationError({ path, reason: "missing", message: "Could not find an exact edit match." })
       );
     }
-
     const second = content.indexOf(edit.oldText, first + edit.oldText.length);
     if (second !== -1) {
       return Result.err(
-        new EditValidationError({
-          path,
-          reason: "duplicate",
-          message: `edits[${index}].oldText is not unique in ${path}.`,
-        })
+        new EditValidationError({ path, reason: "duplicate", message: "An edit's oldText is not unique." })
       );
     }
-
     matches.push({ ...edit, index, start: first, end: first + edit.oldText.length });
   }
 
@@ -90,24 +82,21 @@ export function applyExactEditsResult(
         new EditValidationError({
           path,
           reason: "overlap",
-          message: `edits overlap in ${path}. Use disjoint exact replacements.`,
+          message: "Hubble edits must be disjoint; overlapping edits are not allowed.",
         })
       );
     }
   }
 
   let result = content;
-  for (const edit of [...sorted].reverse()) {
+  for (const edit of [...sorted].reverse())
     result = result.slice(0, edit.start) + edit.newText + result.slice(edit.end);
-  }
-  if (result === content) {
-    return Result.err(
-      new EditValidationError({ path, reason: "no-op", message: `The edits made no changes to ${path}.` })
-    );
-  }
+  if (result === content)
+    return Result.err(new EditValidationError({ path, reason: "no-op", message: "The edits made no changes." }));
   return Result.ok(result);
 }
 
+/** Synchronous helper retained for callers that already have note contents. */
 export function applyExactEdits(content: string, edits: HubbleEdit[], path: string): string {
   const result = applyExactEditsResult(content, edits, path);
   if (Result.isError(result)) throw result.error;
@@ -116,8 +105,8 @@ export function applyExactEdits(content: string, edits: HubbleEdit[], path: stri
 
 function noteReadError(path: HubblePath, cause: unknown): NoteNotFoundError | NoteReadError {
   if (isMissingFileError(cause))
-    return new NoteNotFoundError({ path: path.relative, message: `Hubble note was not found: ${path.relative}` });
-  return new NoteReadError({ path: path.relative, cause, message: `Could not read Hubble note: ${path.relative}.` });
+    return new NoteNotFoundError({ path: path.relative, message: "The requested Hubble note was not found." });
+  return new NoteReadError({ path: path.relative, cause, message: "Could not read the requested Hubble note." });
 }
 
 export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
@@ -125,7 +114,6 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
     try: () => access(path.absolute, constants.R_OK),
     catch: (cause) => noteReadError(path, cause),
   });
-
   if (Result.isError(accessible)) return accessible;
   const fileStat = await Result.tryPromise({
     try: () => stat(path.absolute),
@@ -134,11 +122,7 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
   if (Result.isError(fileStat)) return fileStat;
   if (!fileStat.value.isFile())
     return Result.err(
-      new NoteReadError({
-        path: path.relative,
-        cause: undefined,
-        message: `Hubble path is not a file: ${path.relative}`,
-      })
+      new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." })
     );
   return withFileMutationQueue(path.absolute, () =>
     Result.tryPromise({ try: () => readFile(path.absolute, "utf8"), catch: (cause) => noteReadError(path, cause) })
@@ -146,13 +130,14 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
 }
 
 export async function writeNewVaultFile(
-  vault: HubbleVault,
+  vault: VaultRoot,
   title: string,
   content: string,
   folder = ""
 ): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
-  if (!trimmedTitle) return Result.err(new NoteTitleError({ title, message: "title must not be empty." }));
+  if (!trimmedTitle)
+    return Result.err(new NoteValidationError({ reason: "title", title, message: "title must not be empty." }));
   return withFileMutationQueue(vault.root, async () => {
     const rootCreated = await Result.tryPromise({
       try: () => mkdir(vault.root, { recursive: true }),
@@ -165,9 +150,12 @@ export async function writeNewVaultFile(
           message: "Could not create the Hubble vault directory.",
         }),
     });
+
     if (Result.isError(rootCreated)) return rootCreated;
+
     const directory = await resolveVaultDirectory(vault, folder);
     if (Result.isError(directory)) return directory;
+
     const directoryCreated = await Result.tryPromise({
       try: () => mkdir(directory.value.absolute, { recursive: true }),
       catch: (cause) =>
@@ -180,36 +168,40 @@ export async function writeNewVaultFile(
         }),
     });
     if (Result.isError(directoryCreated)) return directoryCreated;
+
     const slug = slugifyTitle(trimmedTitle);
     const body = `# ${trimmedTitle}\n\n${content}`;
     for (let suffix = 0; suffix < 10_000; suffix++) {
       const filename = `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}.md`;
       const absolute = join(directory.value.absolute, filename);
+      const relativePath = directory.value.relative ? `${directory.value.relative}/${filename}` : filename;
       const opened = await Result.tryPromise({
         try: () => open(absolute, "wx"),
         catch: (cause) =>
           new NoteWriteError({
             operation: "create",
-            path: directory.value.relative ? `${directory.value.relative}/${filename}` : filename,
+            path: relativePath,
             title: trimmedTitle,
             cause,
             message: "Could not create the Hubble note.",
           }),
       });
+
       if (Result.isError(opened)) {
         if (isExistingFileError(opened.error.cause)) continue;
         return opened;
       }
+
       const handle = opened.value;
-      let written!: ResultType<void, NoteWriteError>;
-      let closed!: ResultType<void, NoteWriteError>;
+      let written: ResultType<void, NoteWriteError>;
+      let closed: ResultType<void, NoteWriteError>;
       try {
         written = await Result.tryPromise({
           try: () => handle.writeFile(body, "utf8"),
           catch: (cause) =>
             new NoteWriteError({
               operation: "create",
-              path: directory.value.relative ? `${directory.value.relative}/${filename}` : filename,
+              path: relativePath,
               title: trimmedTitle,
               cause,
               message: "Could not write the Hubble note.",
@@ -221,20 +213,18 @@ export async function writeNewVaultFile(
           catch: (cause) =>
             new NoteWriteError({
               operation: "create",
-              path: directory.value.relative ? `${directory.value.relative}/${filename}` : filename,
+              path: relativePath,
               title: trimmedTitle,
               cause,
               message: "Could not close the Hubble note.",
             }),
         });
       }
+
       if (Result.isError(written)) return written;
       if (Result.isError(closed)) return closed;
-      const fileRelative = relative(directory.value.absolute, absolute).split(sep).join("/");
-      return Result.ok({
-        absolute,
-        relative: directory.value.relative ? `${directory.value.relative}/${fileRelative}` : fileRelative,
-      });
+
+      return Result.ok({ absolute, relative: relativePath });
     }
     return Result.err(
       new NoteWriteError({
@@ -242,7 +232,7 @@ export async function writeNewVaultFile(
         path: directory.value.relative || vault.root,
         title: trimmedTitle,
         cause: new Error("filename exhaustion"),
-        message: `Could not find an unused filename for ${trimmedTitle}.`,
+        message: "Could not find an unused Hubble filename.",
       })
     );
   });
@@ -250,13 +240,17 @@ export async function writeNewVaultFile(
 
 export async function appendToVaultFile(path: HubblePath, content: string): Promise<ResultType<void, AppendNoteError>> {
   if (!content)
-    return Result.err(new NoteAppendValidationError({ path: path.relative, message: "content must not be empty." }));
+    return Result.err(
+      new NoteValidationError({ reason: "append", path: path.relative, message: "content must not be empty." })
+    );
   return withFileMutationQueue(path.absolute, async () => {
     const current = await Result.tryPromise({
       try: () => readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
     });
+
     if (Result.isError(current)) return current;
+
     const separator = current.value.length > 0 && !current.value.endsWith("\n") ? "\n" : "";
     return Result.tryPromise({
       try: () => writeFile(path.absolute, current.value + separator + content, "utf8"),
@@ -265,7 +259,7 @@ export async function appendToVaultFile(path: HubblePath, content: string): Prom
           operation: "append",
           path: path.relative,
           cause,
-          message: `Could not append to Hubble note: ${path.relative}.`,
+          message: "Could not append to the Hubble note.",
         }),
     });
   });
@@ -278,8 +272,10 @@ export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Prom
       catch: (cause) => noteReadError(path, cause),
     });
     if (Result.isError(current)) return current;
+
     const next = applyExactEditsResult(current.value, edits, path.relative);
     if (Result.isError(next)) return next;
+
     return Result.tryPromise({
       try: () => writeFile(path.absolute, next.value, "utf8"),
       catch: (cause) =>
@@ -287,24 +283,28 @@ export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Prom
           operation: "edit",
           path: path.relative,
           cause,
-          message: `Could not edit Hubble note: ${path.relative}.`,
+          message: "Could not edit the Hubble note.",
         }),
     });
   });
 }
 
-export async function listMarkdownFiles(vault: HubbleVault): Promise<ResultType<HubblePath[], DiscoveryError>> {
-  const files: HubblePath[] = [];
+export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<NoteReference[], DiscoveryError>> {
+  const files: NoteReference[] = [];
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
     const entries = await Result.tryPromise({
       try: () => readdir(directory, { withFileTypes: true }),
       catch: (cause) =>
-        new VaultDiscoveryError({ path: directory, cause, message: `Could not scan the Hubble vault: ${directory}.` }),
+        new VaultDiscoveryError({
+          path: directory,
+          reason: "scan",
+          cause,
+          message: "Could not scan the configured Hubble vault.",
+        }),
     });
-    if (Result.isError(entries)) {
-      if (isMissingFileError(entries.error.cause)) return Result.ok();
-      return entries;
-    }
+
+    if (Result.isError(entries)) return isMissingFileError(entries.error.cause) ? Result.ok() : entries;
+
     for (const entry of entries.value) {
       if (entry.isSymbolicLink()) continue;
       const absolute = join(directory, entry.name);
@@ -315,30 +315,34 @@ export async function listMarkdownFiles(vault: HubbleVault): Promise<ResultType<
         files.push({ absolute, relative: relative(vault.root, absolute).split(sep).join("/") });
       }
     }
+
     return Result.ok();
   }
+
   const rootStat = await Result.tryPromise({
     try: () => stat(vault.root),
     catch: (cause) =>
       new VaultDiscoveryError({
         path: vault.root,
+        reason: "scan",
         cause,
-        message: `Could not inspect the Hubble vault: ${vault.root}.`,
+        message: "Could not inspect the configured Hubble vault.",
       }),
   });
-  if (Result.isError(rootStat)) {
-    if (isMissingFileError(rootStat.error.cause)) return Result.ok(files);
-    return rootStat;
-  }
+
+  if (Result.isError(rootStat)) return isMissingFileError(rootStat.error.cause) ? Result.ok(files) : rootStat;
+
   if (!rootStat.value.isDirectory())
     return Result.err(
-      new VaultRootTypeError({ root: vault.root, message: `Hubble vault is not a directory: ${vault.root}` })
+      new VaultDiscoveryError({
+        path: vault.root,
+        reason: "not-directory",
+        message: "The configured Hubble vault is not a directory.",
+      })
     );
+
   const visited = await visit(vault.root);
   if (Result.isError(visited)) return visited;
-  return Result.ok(files.sort((a, b) => a.relative.localeCompare(b.relative)));
-}
 
-function isExistingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+  return Result.ok(files.sort((a, b) => a.relative.localeCompare(b.relative)));
 }

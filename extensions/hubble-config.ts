@@ -1,8 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType, TaggedError } from "better-result";
+import type { VaultOpenErrorType } from "./hubble-errors.ts";
+import type { Vault } from "./hubble-vault.ts";
 
 const CONFIG_FILENAME = "hubble.json";
 
@@ -31,6 +34,8 @@ export class VaultNotConfiguredError extends TaggedError("VaultNotConfiguredErro
 }> {}
 
 export type ConfigError = ConfigReadError | ConfigParseError | InvalidConfigError | VaultNotConfiguredError;
+export type RootContext = Pick<ExtensionContext, "cwd" | "isProjectTrusted">;
+export type GetVault = (context: RootContext) => Promise<ResultType<Vault, ConfigError | VaultOpenErrorType>>;
 
 function expandPath(value: string, cwd: string, source: string): ResultType<string, InvalidConfigError> {
   const trimmed = value.trim();
@@ -42,16 +47,19 @@ function expandPath(value: string, cwd: string, source: string): ResultType<stri
 
   if (trimmed === "~") return Result.ok(homedir());
   if (trimmed.startsWith("~/")) return Result.ok(resolve(homedir(), trimmed.slice(2)));
+
   return Result.ok(isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed));
 }
 
 function getStringFlag(value: unknown): ResultType<string | undefined, InvalidConfigError> {
   if (value === undefined || value === null || value === false) return Result.ok(undefined);
+
   if (typeof value !== "string") {
     return Result.err(
-      new InvalidConfigError({ path: "--hubble-dir", input: value, message: "--hubble-dir requires a path." })
+      new InvalidConfigError({ path: "--hubble-dir", input: value, message: "--hubble-dir requires a non-empty path." })
     );
   }
+
   return Result.ok(value);
 }
 
@@ -61,8 +69,9 @@ async function readConfiguredRoot(
   const source = await Result.tryPromise({
     try: () => readFile(configPath, "utf8"),
     catch: (cause) =>
-      new ConfigReadError({ path: configPath, cause, message: `Could not read Hubble configuration: ${configPath}.` }),
+      new ConfigReadError({ path: configPath, cause, message: "Could not read the Hubble configuration." }),
   });
+
   if (Result.isError(source)) {
     if (isMissingFileError(source.error.cause)) return Result.ok(undefined);
     return source;
@@ -74,24 +83,31 @@ async function readConfiguredRoot(
       new ConfigParseError({
         path: configPath,
         cause,
-        message: `Could not parse Hubble configuration: ${configPath}.`,
+        message: "Could not parse the Hubble configuration.",
       }),
   });
+
   if (Result.isError(parsed)) return parsed;
 
   if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
     return Result.err(
-      new InvalidConfigError({ path: configPath, message: `${configPath}: the config must be a JSON object.` })
+      new InvalidConfigError({ path: configPath, message: "The Hubble configuration must be a JSON object." })
     );
   }
 
   const root = (parsed.value as { root?: unknown }).root;
   if (root === undefined) return Result.ok(undefined);
+
   if (typeof root !== "string") {
     return Result.err(
-      new InvalidConfigError({ path: configPath, input: root, message: `${configPath}: "root" must be a string.` })
+      new InvalidConfigError({
+        path: configPath,
+        input: root,
+        message: "The Hubble configuration root must be a string.",
+      })
     );
   }
+
   return Result.ok(root);
 }
 

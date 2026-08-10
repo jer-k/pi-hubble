@@ -8,7 +8,12 @@ import {
   Spacer,
   Text,
 } from "@earendil-works/pi-tui";
-import type { HubblePath } from "./hubble-vault.ts";
+import type { NoteReference } from "./hubble-vault.ts";
+
+export function attachmentValue(path: string): string {
+  if (path.includes(" ") || path.includes('"')) return `@"${path.replaceAll('"', '\\"')}"`;
+  return `@${path}`;
+}
 
 const MAX_VISIBLE_NOTES = 12;
 
@@ -29,11 +34,11 @@ export class HubbleNotePicker extends Container implements Focusable {
   private readonly tui: HubbleTui;
   private readonly theme: HubbleTheme;
   private readonly keybindings: HubbleKeybindings;
-  private readonly notes: HubblePath[];
-  private readonly onSelectNote: (note: HubblePath | undefined) => void;
+  private readonly notes: NoteReference[];
+  private readonly onSelectNote: (note: NoteReference | undefined) => void;
   private readonly search = new Input();
   private readonly listContainer = new Container();
-  private filteredNotes: HubblePath[];
+  private filteredNotes: NoteReference[];
   private list: SelectList;
   private _focused = false;
 
@@ -41,9 +46,9 @@ export class HubbleNotePicker extends Container implements Focusable {
     tui: HubbleTui,
     theme: HubbleTheme,
     keybindings: HubbleKeybindings,
-    notes: HubblePath[],
+    notes: NoteReference[],
     initialQuery: string,
-    onSelect: (note: HubblePath | undefined) => void
+    onSelect: (note: NoteReference | undefined) => void
   ) {
     super();
     this.tui = tui;
@@ -89,9 +94,11 @@ export class HubbleNotePicker extends Container implements Focusable {
       scrollInfo: (text) => this.theme.fg("dim", text),
       noMatch: (text) => this.theme.fg("warning", text),
     });
+
     list.onSelect = (item) => {
       this.onSelectNote(this.filteredNotes.find((note) => note.relative === item.value));
     };
+
     list.onCancel = () => this.onSelectNote(undefined);
     return list;
   }

@@ -2,10 +2,10 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Result } from "better-result";
 import { expect, test } from "vitest";
-import type { GetRoot } from "../extensions/hubble-boundary.ts";
+import type { GetVault } from "../extensions/hubble-config.ts";
 import { registerHubbleTools } from "../extensions/hubble-tools.ts";
+import { openVault } from "../extensions/hubble-vault.ts";
 
 type ToolResult = { content: Array<{ text: string }>; details: unknown };
 
@@ -13,14 +13,14 @@ type ToolExecutor = (...args: unknown[]) => Promise<ToolResult>;
 
 type RegisteredTestTool = { execute: ToolExecutor };
 
-function register(getRoot: () => Promise<unknown>) {
+function register(getVault: GetVault) {
   const tools: Record<string, RegisteredTestTool> = {};
   const pi = {
     registerTool(tool: { name: string; execute: ToolExecutor }) {
       tools[tool.name] = tool;
     },
   };
-  registerHubbleTools(pi as unknown as ExtensionAPI, getRoot as unknown as GetRoot);
+  registerHubbleTools(pi as unknown as ExtensionAPI, getVault);
   return tools;
 }
 
@@ -28,7 +28,7 @@ const context = { cwd: process.cwd(), isProjectTrusted: () => true };
 
 test("executes create, read, edit, append, and search tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-"));
-  const tools = register(async () => Result.ok(root));
+  const tools = register(async () => openVault(root));
   expect(Object.keys(tools)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit", "hubble_append"]);
 
   const created = await tools.hubble_create.execute(
@@ -84,7 +84,7 @@ test("executes create, read, edit, append, and search tools", async () => {
 
 test("reports validation failures and honors cancellation", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-errors-"));
-  const tools = register(async () => Result.ok(root));
+  const tools = register(async () => openVault(root));
   await expect(tools.hubble_search.execute("search", { query: "   " }, undefined, undefined, context)).rejects.toThrow(
     "query must not be empty."
   );
