@@ -87,13 +87,21 @@ reference, so the note is attached to the current prompt.
 
 ## Development
 
-Run the test suite and checks with:
+Run the unit test suite and checks with:
 
 ```bash
 npm test
 npm run typecheck
 npm run lint
 ```
+
+Run the Pi CLI integration smoke test separately:
+
+```bash
+npm run test:integration
+```
+
+The integration suite uses the project-local Pi executable to exercise `/hubble new` through RPC mode with `--hubble-dir`. It also loads this checkout through Pi's SDK runtime to exercise every Hubble tool and the `@hubble/` autocomplete provider without requiring an LLM or API credentials.
 
 ## License
 
