@@ -9,6 +9,9 @@ import {
   type DiscoveryError,
   type EditNoteError,
   EditValidationError,
+  ExistingFileError,
+  mapFileSystemError,
+  MissingFileError,
   NoteNotFoundError,
   NoteReadError,
   type NoteReadResult,
@@ -24,16 +27,6 @@ export interface HubbleEdit {
 }
 
 export type NoteReference = HubblePath;
-
-/** Identifies filesystem errors caused by a missing path. */
-function isMissingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-/** Identifies filesystem errors caused by a filename collision. */
-function isExistingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-}
 
 /** Turns a note title into a filesystem-safe Markdown filename slug. */
 export function slugifyTitle(title: string): string {
@@ -109,9 +102,14 @@ export function applyExactEdits(content: string, edits: HubbleEdit[], path: stri
 
 /** Maps a filesystem read failure to the appropriate public note error. */
 function noteReadError(path: HubblePath, cause: unknown): NoteNotFoundError | NoteReadError {
-  if (isMissingFileError(cause))
+  const filesystemError = mapFileSystemError(path.absolute, cause);
+  if (MissingFileError.is(filesystemError))
     return new NoteNotFoundError({ path: path.relative, message: "The requested Hubble note was not found." });
-  return new NoteReadError({ path: path.relative, cause, message: "Could not read the requested Hubble note." });
+  return new NoteReadError({
+    path: path.relative,
+    cause: filesystemError,
+    message: "Could not read the requested Hubble note.",
+  });
 }
 
 /** Reads one validated vault file while distinguishing missing and unreadable notes. */
@@ -153,7 +151,7 @@ export async function writeNewVaultFile(
           operation: "create",
           path: vault.root,
           title: trimmedTitle,
-          cause,
+          cause: mapFileSystemError(vault.root, cause),
           message: "Could not create the Hubble vault directory.",
         }),
     });
@@ -170,7 +168,7 @@ export async function writeNewVaultFile(
           operation: "create",
           path: directory.value.relative || vault.root,
           title: trimmedTitle,
-          cause,
+          cause: mapFileSystemError(directory.value.absolute, cause),
           message: "Could not create the Hubble note folder.",
         }),
     });
@@ -189,13 +187,13 @@ export async function writeNewVaultFile(
             operation: "create",
             path: relativePath,
             title: trimmedTitle,
-            cause,
+            cause: mapFileSystemError(absolute, cause),
             message: "Could not create the Hubble note.",
           }),
       });
 
       if (Result.isError(opened)) {
-        if (isExistingFileError(opened.error.cause)) continue;
+        if (ExistingFileError.is(opened.error.cause)) continue;
         return opened;
       }
 
@@ -210,7 +208,7 @@ export async function writeNewVaultFile(
               operation: "create",
               path: relativePath,
               title: trimmedTitle,
-              cause,
+              cause: mapFileSystemError(absolute, cause),
               message: "Could not write the Hubble note.",
             }),
         });
@@ -222,7 +220,7 @@ export async function writeNewVaultFile(
               operation: "create",
               path: relativePath,
               title: trimmedTitle,
-              cause,
+              cause: mapFileSystemError(absolute, cause),
               message: "Could not close the Hubble note.",
             }),
         });
@@ -266,7 +264,7 @@ export async function appendToVaultFile(path: HubblePath, content: string): Prom
         new NoteWriteError({
           operation: "append",
           path: path.relative,
-          cause,
+          cause: mapFileSystemError(path.absolute, cause),
           message: "Could not append to the Hubble note.",
         }),
     });
@@ -291,7 +289,7 @@ export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Prom
         new NoteWriteError({
           operation: "edit",
           path: path.relative,
-          cause,
+          cause: mapFileSystemError(path.absolute, cause),
           message: "Could not edit the Hubble note.",
         }),
     });
@@ -309,12 +307,12 @@ export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<No
         new VaultDiscoveryError({
           path: directory,
           reason: "scan",
-          cause,
+          cause: mapFileSystemError(directory, cause),
           message: "Could not scan the configured Hubble vault.",
         }),
     });
 
-    if (Result.isError(entries)) return isMissingFileError(entries.error.cause) ? Result.ok() : entries;
+    if (Result.isError(entries)) return MissingFileError.is(entries.error.cause) ? Result.ok() : entries;
 
     for (const entry of entries.value) {
       if (entry.isSymbolicLink()) continue;
@@ -336,12 +334,12 @@ export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<No
       new VaultDiscoveryError({
         path: vault.root,
         reason: "scan",
-        cause,
+        cause: mapFileSystemError(vault.root, cause),
         message: "Could not inspect the configured Hubble vault.",
       }),
   });
 
-  if (Result.isError(rootStat)) return isMissingFileError(rootStat.error.cause) ? Result.ok(files) : rootStat;
+  if (Result.isError(rootStat)) return MissingFileError.is(rootStat.error.cause) ? Result.ok(files) : rootStat;
 
   if (!rootStat.value.isDirectory())
     return Result.err(

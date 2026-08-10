@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType, TaggedError } from "better-result";
-import type { VaultOpenErrorType } from "./hubble-errors.ts";
+import { mapFileSystemError, MissingFileError, type VaultOpenErrorType } from "./hubble-errors.ts";
 import type { Vault } from "./hubble-vault.ts";
 
 const CONFIG_FILENAME = "hubble.json";
@@ -71,13 +71,21 @@ async function readConfiguredRoot(
 ): Promise<ResultType<string | undefined, ConfigReadError | ConfigParseError | InvalidConfigError>> {
   const source = await Result.tryPromise({
     try: () => readFile(configPath, "utf8"),
-    catch: (cause) =>
-      new ConfigReadError({ path: configPath, cause, message: "Could not read the Hubble configuration." }),
+    catch: (cause) => {
+      const filesystemError = mapFileSystemError(configPath, cause);
+      return MissingFileError.is(filesystemError)
+        ? filesystemError
+        : new ConfigReadError({ path: configPath, cause, message: "Could not read the Hubble configuration." });
+    },
   });
 
   if (Result.isError(source)) {
-    if (isMissingFileError(source.error.cause)) return Result.ok(undefined);
-    return source;
+    const error = source.error;
+    if (MissingFileError.is(error)) return Result.ok(undefined);
+    if (ConfigReadError.is(error)) return Result.err(error);
+    return Result.err(
+      new ConfigReadError({ path: configPath, cause: error, message: "Could not read the Hubble configuration." })
+    );
   }
 
   const parsed = Result.try({
@@ -147,9 +155,4 @@ export async function resolveHubbleRoot(
   }
 
   return expandPath(configuredRoot, cwd, projectTrusted && localRoot.value !== undefined ? localPath : globalPath);
-}
-
-/** Identifies filesystem errors caused by a missing path. */
-function isMissingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }

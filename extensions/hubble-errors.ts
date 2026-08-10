@@ -1,6 +1,38 @@
 import { type Result as ResultType, TaggedError } from "better-result";
 import type { HubblePath } from "./hubble-paths.ts";
 
+export type FileSystemFailure = MissingFileError | ExistingFileError;
+
+export class MissingFileError extends TaggedError("MissingFileError")<{
+  path: string;
+  cause: unknown;
+  message: string;
+}> {}
+
+export class ExistingFileError extends TaggedError("ExistingFileError")<{
+  path: string;
+  cause: unknown;
+  message: string;
+}> {}
+
+/** Reads a Node-style error code without assuming the rejection is an Error instance. */
+function systemErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+/** Maps the filesystem failures that callers need to recover from. */
+export function mapFileSystemError<T>(path: string, cause: T): FileSystemFailure | T {
+  switch (systemErrorCode(cause)) {
+    case "ENOENT":
+      return new MissingFileError({ path, cause, message: "The requested filesystem path does not exist." });
+    case "EEXIST":
+      return new ExistingFileError({ path, cause, message: "The requested filesystem path already exists." });
+    default:
+      return cause;
+  }
+}
+
 export type VaultPathReason =
   | "empty"
   | "absolute"

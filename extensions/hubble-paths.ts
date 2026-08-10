@@ -1,7 +1,14 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Result, type Result as ResultType } from "better-result";
-import { VaultOpenError, type VaultOpenErrorType, VaultPathError, type VaultPathReason } from "./hubble-errors.ts";
+import {
+  MissingFileError,
+  mapFileSystemError,
+  VaultOpenError,
+  type VaultOpenErrorType,
+  VaultPathError,
+  type VaultPathReason,
+} from "./hubble-errors.ts";
 
 export interface HubblePath {
   absolute: string;
@@ -14,11 +21,6 @@ export interface VaultRoot {
 
 export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
 
-/** Identifies filesystem errors caused by a missing path. */
-function isMissingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
 /** Reports whether a candidate path remains inside the canonical vault root. */
 function isInside(root: string, candidate: string): boolean {
   const rootWithSeparator = root.endsWith(sep) ? root : `${root}${sep}`;
@@ -26,7 +28,12 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 /** Creates a consistent typed error for invalid or unsafe vault paths. */
-function pathError(input: string, reason: VaultPathReason, message: string, cause?: unknown): VaultPathError {
+function pathError(
+  input: string,
+  reason: VaultPathReason,
+  message: string,
+  cause?: ReturnType<typeof mapFileSystemError>
+): VaultPathError {
   return new VaultPathError({ input, reason, cause, message });
 }
 
@@ -36,14 +43,24 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
   const resolved = await Result.tryPromise({
     try: () => realpath(resolvedRoot),
     catch: (cause) =>
-      new VaultOpenError({ root, reason: "open", cause, message: "Could not open the configured Hubble vault." }),
+      new VaultOpenError({
+        root,
+        reason: "open",
+        cause: mapFileSystemError(resolvedRoot, cause),
+        message: "Could not open the configured Hubble vault.",
+      }),
   });
 
   if (Result.isOk(resolved)) {
     const rootStat = await Result.tryPromise({
       try: () => stat(resolved.value),
       catch: (cause) =>
-        new VaultOpenError({ root, reason: "open", cause, message: "Could not open the configured Hubble vault." }),
+        new VaultOpenError({
+          root,
+          reason: "open",
+          cause: mapFileSystemError(resolved.value, cause),
+          message: "Could not open the configured Hubble vault.",
+        }),
     });
 
     if (Result.isError(rootStat)) return rootStat;
@@ -61,7 +78,7 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
     return Result.ok(resolved.value);
   }
 
-  if (!isMissingFileError(resolved.error.cause)) return resolved;
+  if (!MissingFileError.is(resolved.error.cause)) return resolved;
 
   const missingParts: string[] = [];
   let ancestor = resolvedRoot;
@@ -69,14 +86,24 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
     const resolvedAncestor = await Result.tryPromise({
       try: () => realpath(ancestor),
       catch: (cause) =>
-        new VaultOpenError({ root, reason: "open", cause, message: "Could not open the configured Hubble vault." }),
+        new VaultOpenError({
+          root,
+          reason: "open",
+          cause: mapFileSystemError(ancestor, cause),
+          message: "Could not open the configured Hubble vault.",
+        }),
     });
 
     if (Result.isOk(resolvedAncestor)) {
       const ancestorStat = await Result.tryPromise({
         try: () => stat(resolvedAncestor.value),
         catch: (cause) =>
-          new VaultOpenError({ root, reason: "open", cause, message: "Could not open the configured Hubble vault." }),
+          new VaultOpenError({
+            root,
+            reason: "open",
+            cause: mapFileSystemError(resolvedAncestor.value, cause),
+            message: "Could not open the configured Hubble vault.",
+          }),
       });
 
       if (Result.isError(ancestorStat)) return ancestorStat;
@@ -94,7 +121,7 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
       return Result.ok(missingParts.reduce((path, part) => join(path, part), resolvedAncestor.value));
     }
 
-    if (!isMissingFileError(resolvedAncestor.error.cause)) return resolvedAncestor;
+    if (!MissingFileError.is(resolvedAncestor.error.cause)) return resolvedAncestor;
 
     const parent = dirname(ancestor);
     if (parent === ancestor) {
@@ -123,7 +150,13 @@ async function assertExistingAncestorInside(
     if (!isInside(root, ancestor)) return Result.err(pathError(input, "escape", "Hubble path escapes the vault."));
     const resolvedAncestor = await Result.tryPromise({
       try: () => realpath(ancestor),
-      catch: (cause) => pathError(input, "filesystem", "Could not resolve the requested Hubble path.", cause),
+      catch: (cause) =>
+        pathError(
+          input,
+          "filesystem",
+          "Could not resolve the requested Hubble path.",
+          mapFileSystemError(ancestor, cause)
+        ),
     });
 
     if (Result.isOk(resolvedAncestor)) {
@@ -132,7 +165,7 @@ async function assertExistingAncestorInside(
         : Result.err(pathError(input, "symlink-escape", "Hubble path escapes the vault through a symlink."));
     }
 
-    if (!isMissingFileError(resolvedAncestor.error.cause)) return Result.err(resolvedAncestor.error);
+    if (!MissingFileError.is(resolvedAncestor.error.cause)) return Result.err(resolvedAncestor.error);
     // A canonicalized Vault may legitimately have a missing root. Let note
     // operations resolve to the filesystem so they can return NoteNotFound.
 
@@ -175,11 +208,17 @@ async function resolveContained(
 
   const resolvedTarget = await Result.tryPromise({
     try: () => realpath(absolute),
-    catch: (cause) => pathError(normalized, "filesystem", `Could not resolve the requested Hubble ${policy}.`, cause),
+    catch: (cause) =>
+      pathError(
+        normalized,
+        "filesystem",
+        `Could not resolve the requested Hubble ${policy}.`,
+        mapFileSystemError(absolute, cause)
+      ),
   });
 
   if (Result.isError(resolvedTarget)) {
-    if (!isMissingFileError(resolvedTarget.error.cause)) return resolvedTarget;
+    if (!MissingFileError.is(resolvedTarget.error.cause)) return resolvedTarget;
 
     const parent = await assertExistingAncestorInside(vault.root, absolute, normalized);
     if (Result.isError(parent)) return parent;
@@ -190,7 +229,13 @@ async function resolveContained(
   if (policy === "folder" && Result.isOk(resolvedTarget)) {
     const targetStat = await Result.tryPromise({
       try: () => stat(resolvedTarget.value),
-      catch: (cause) => pathError(normalized, "filesystem", "Could not inspect the requested Hubble folder.", cause),
+      catch: (cause) =>
+        pathError(
+          normalized,
+          "filesystem",
+          "Could not inspect the requested Hubble folder.",
+          mapFileSystemError(resolvedTarget.value, cause)
+        ),
     });
 
     if (Result.isError(targetStat)) return targetStat;
