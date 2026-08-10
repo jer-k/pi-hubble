@@ -6,6 +6,7 @@ import type { HubbleFailure } from "./hubble-errors.ts";
 import { attachmentValue, HubbleNotePicker } from "./hubble-ui.ts";
 import type { NoteReference, Vault } from "./hubble-vault.ts";
 
+/** Adds a vault note attachment to the end of the command editor text. */
 function appendEditorAttachment(
   ctx: { ui: { getEditorText(): string; setEditorText(text: string): void } },
   path: string
@@ -19,6 +20,7 @@ interface HubbleCommandSelection {
   searchContents: boolean;
 }
 
+/** Parses /hubble arguments into a note query and filename/content search mode. */
 function parseHubbleCommand(args: string): HubbleCommandSelection {
   const trimmed = args.trim();
   const searchMatch = trimmed.match(/^search(?:\s+(.+))?$/iu);
@@ -30,6 +32,7 @@ function parseHubbleCommand(args: string): HubbleCommandSelection {
   return { query: trimmed, searchContents: false };
 }
 
+/** Removes one matching pair of single or double quotes from a value. */
 function unquote(value: string): string {
   if (
     value.length >= 2 &&
@@ -41,6 +44,7 @@ function unquote(value: string): string {
   return value;
 }
 
+/** Parses the /hubble new syntax, including its optional folder flag. */
 function parseNewCommand(args: string): { title: string; folder?: string } | undefined {
   const match = args.trim().match(/^new(?:\s+([\s\S]*))?$/iu);
   if (!match) return undefined;
@@ -57,6 +61,7 @@ function parseNewCommand(args: string): { title: string; folder?: string } | und
   return { title: unquote(remainder), folder };
 }
 
+/** Selects notes by filename or searches their contents for the command picker. */
 async function selectNotes(
   vault: Vault,
   query: string,
@@ -74,6 +79,7 @@ async function selectNotes(
   return Result.ok(query ? fuzzyFilter(files.value, query, (file) => file.relative) : files.value);
 }
 
+/** Handles interactive note creation, including agent-assisted title selection. */
 async function handleNewNote(
   args: string,
   ctx: ExtensionCommandContext,
@@ -132,9 +138,11 @@ async function handleNewNote(
   ctx.ui.notify(`Created Hubble note: ${created.value.relative}`, "info");
 }
 
+/** Registers the /hubble command for finding, attaching, and creating notes. */
 export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerCommand("hubble", {
     description: "Find and attach a Markdown note from the Hubble vault",
+    /** Supplies completion entries for the /hubble subcommands. */
     getArgumentCompletions(prefix) {
       const items: AutocompleteItem[] = [
         { value: "new", label: "new", description: "Create a new Hubble note" },
@@ -144,6 +152,7 @@ export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): voi
       const filtered = fuzzyFilter(items, prefix, (item) => item.value);
       return filtered.length > 0 ? filtered : null;
     },
+    /** Runs the /hubble command and attaches the selected note to the editor. */
     handler: async (args, ctx) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("/hubble requires interactive UI mode.", "warning");

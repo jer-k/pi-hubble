@@ -14,20 +14,23 @@ export interface VaultRoot {
 
 export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
 
+/** Identifies filesystem errors caused by a missing path. */
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
+/** Reports whether a candidate path remains inside the canonical vault root. */
 function isInside(root: string, candidate: string): boolean {
   const rootWithSeparator = root.endsWith(sep) ? root : `${root}${sep}`;
   return candidate === root || candidate.startsWith(rootWithSeparator);
 }
 
+/** Creates a consistent typed error for invalid or unsafe vault paths. */
 function pathError(input: string, reason: VaultPathReason, message: string, cause?: unknown): VaultPathError {
   return new VaultPathError({ input, reason, cause, message });
 }
 
-/** Resolve the first existing ancestor and retain the missing suffix. */
+/** Resolves a vault root, including roots whose final directories do not exist yet. */
 export async function canonicalVaultRoot(root: string): Promise<ResultType<string, VaultOpenErrorType>> {
   const resolvedRoot = resolve(root);
   const resolved = await Result.tryPromise({
@@ -109,6 +112,7 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
   }
 }
 
+/** Verifies that the existing ancestor of a missing target stays within the vault. */
 async function assertExistingAncestorInside(
   root: string,
   candidate: string,
@@ -142,7 +146,7 @@ async function assertExistingAncestorInside(
   }
 }
 
-/** The single containment implementation used by note and folder targets. */
+/** Resolves a note or folder path while enforcing vault containment and symlink safety. */
 async function resolveContained(
   vault: VaultRoot,
   userPath: string,
@@ -198,14 +202,17 @@ async function resolveContained(
   return Result.ok({ absolute, relative: relative(vault.root, absolute).split(sep).join("/") });
 }
 
+/** Resolves a user-supplied note path relative to the vault. */
 export function resolveVaultPath(vault: VaultRoot, userPath: string): Promise<VaultPathResult> {
   return resolveContained(vault, userPath, "note");
 }
 
+/** Resolves a user-supplied folder path relative to the vault. */
 export function resolveVaultDirectory(vault: VaultRoot, userPath: string): Promise<VaultPathResult> {
   return resolveContained(vault, userPath, "folder");
 }
 
+/** Ensures a resolved vault target points to a Markdown document. */
 export function assertMarkdownPath(path: HubblePath): ResultType<void, VaultPathError> {
   if (extname(path.relative.toLowerCase()) !== ".md") {
     return Result.err(pathError(path.relative, "not-markdown", "Hubble document must be a Markdown file."));

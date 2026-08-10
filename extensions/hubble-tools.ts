@@ -55,20 +55,23 @@ const AppendParameters = Type.Object({
   content: Type.String({ description: "Markdown to append to the note" }),
 });
 
+/** Returns a successful Result value or raises its Hubble failure for the tool API. */
 function unwrap<T, E extends HubbleFailure>(result: ResultType<T, E>): T {
   if (Result.isError(result)) throwHubbleError(result.error);
   return result.value;
 }
 
+/** Stops a tool operation immediately when its cancellation signal is aborted. */
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
 }
 
+/** Shapes text and metadata into the response format used by Hubble tools. */
 function noteResult(text: string, details: Record<string, unknown> = {}) {
   return { content: [{ type: "text" as const, text }], details };
 }
 
-/** Model-context policy belongs to the tool adapter, not the Vault. */
+/** Truncates tool output for model context and saves the complete output when needed. */
 export async function truncateOutput(output: string): Promise<ResultType<TruncatedOutput, OutputPersistenceError>> {
   const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   if (!truncation.truncated) return Result.ok({ text: truncation.content, truncated: false });
@@ -98,6 +101,7 @@ export async function truncateOutput(output: string): Promise<ResultType<Truncat
   });
 }
 
+/** Converts note search matches into the line-oriented tool output format. */
 function formatSearchResults(results: NoteSearchResult[], limit: number): { lines: string[]; count: number } {
   const lines: string[] = [];
   for (const result of results) {
@@ -110,6 +114,7 @@ function formatSearchResults(results: NoteSearchResult[], limit: number): { line
   return { lines, count: lines.length };
 }
 
+/** Registers the Hubble search, read, create, edit, and append tools. */
 export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerTool({
     name: "hubble_search",
@@ -122,6 +127,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       "Hubble tool paths are relative to the configured vault; do not use absolute paths or paths outside the vault.",
     ],
     parameters: SearchParameters,
+    /** Searches vault notes and formats matching lines for the model. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
@@ -157,6 +163,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       "Use hubble_read for notes discovered with hubble_search; pass the vault-relative path returned by Hubble tools.",
     ],
     parameters: ReadParameters,
+    /** Reads a vault-relative note, optionally returning only a requested line range. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
@@ -190,6 +197,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
     ],
     parameters: CreateParameters,
+    /** Creates a new Markdown note in the configured vault. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
@@ -210,6 +218,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       "Use hubble_edit for targeted Hubble note changes; each oldText must match exactly once and edits must not overlap.",
     ],
     parameters: EditParameters,
+    /** Applies unique exact-text replacements to a vault note. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
@@ -233,6 +242,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       "Use hubble_append when adding a section or research result to an existing Hubble note without replacing its contents.",
     ],
     parameters: AppendParameters,
+    /** Appends Markdown to an existing vault note. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 

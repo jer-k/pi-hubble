@@ -50,19 +50,23 @@ export type VaultListResult = ResultType<NoteReference[], DiscoveryError>;
 export class Vault implements VaultRoot {
   readonly root: string;
 
+  /** Creates a Vault around an already canonicalized root. */
   private constructor(root: string) {
     this.root = root;
   }
 
+  /** Opens and canonicalizes a vault root before exposing vault operations. */
   static async open(root: string): Promise<ResultType<Vault, VaultOpenErrorType>> {
     const resolved = await canonicalVaultRoot(root);
     return Result.isError(resolved) ? resolved : Result.ok(new Vault(resolved.value));
   }
 
+  /** Lists all Markdown notes currently stored in the vault. */
   async list(): Promise<VaultListResult> {
     return listMarkdownFiles(this);
   }
 
+  /** Searches every Markdown note for case-insensitive line matches. */
   async search(query: string, signal?: AbortSignal): Promise<VaultSearchResult> {
     const normalized = query.trim().toLowerCase();
     if (!normalized)
@@ -88,6 +92,7 @@ export class Vault implements VaultRoot {
     return Result.ok(results);
   }
 
+  /** Resolves, validates, and reads one Markdown note from the vault. */
   async read(path: string): Promise<VaultReadResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
@@ -101,10 +106,12 @@ export class Vault implements VaultRoot {
     return Result.ok({ note: resolved.value, content: content.value });
   }
 
+  /** Creates a uniquely named Markdown note in the requested vault folder. */
   async create(title: string, content: string, folder = ""): Promise<VaultCreateResult> {
     return writeNewVaultFile(this, title, content, folder);
   }
 
+  /** Applies exact-text edits to one validated Markdown note. */
   async edit(path: string, edits: HubbleEdit[]): Promise<VaultEditResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
@@ -118,6 +125,7 @@ export class Vault implements VaultRoot {
     return Result.ok(resolved.value);
   }
 
+  /** Appends Markdown to one validated note without replacing existing content. */
   async append(path: string, content: string): Promise<VaultAppendResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
@@ -132,6 +140,7 @@ export class Vault implements VaultRoot {
   }
 }
 
+/** Opens a Hubble vault through the high-level Vault interface. */
 export function openVault(root: string): Promise<ResultType<Vault, VaultOpenErrorType>> {
   return Vault.open(root);
 }

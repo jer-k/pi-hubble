@@ -8,6 +8,7 @@ import { openVault } from "./hubble-vault.ts";
 
 export type { GetVault, RootContext } from "./hubble-config.ts";
 
+/** Initializes the Hubble extension, including its flag, vault access, command, tools, and autocomplete. */
 export default function (pi: ExtensionAPI): void {
   pi.registerFlag("hubble-dir", {
     description: "Hubble vault root for this session (overrides Hubble config)",

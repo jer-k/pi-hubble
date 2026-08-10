@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { NoteReference } from "./hubble-vault.ts";
 
+/** Formats a filesystem path as an escaped @ attachment for the Pi editor. */
 export function attachmentValue(path: string): string {
   if (path.includes(" ") || path.includes('"')) return `@"${path.replaceAll('"', '\\"')}"`;
   return `@${path}`;
@@ -30,6 +31,7 @@ interface HubbleTui {
   requestRender(): void;
 }
 
+/** Provides an interactive, filterable list for selecting a Hubble note attachment. */
 export class HubbleNotePicker extends Container implements Focusable {
   private readonly tui: HubbleTui;
   private readonly theme: HubbleTheme;
@@ -42,6 +44,7 @@ export class HubbleNotePicker extends Container implements Focusable {
   private list: SelectList;
   private _focused = false;
 
+  /** Builds the picker UI and initializes it with the available notes. */
   constructor(
     tui: HubbleTui,
     theme: HubbleTheme,
@@ -72,15 +75,18 @@ export class HubbleNotePicker extends Container implements Focusable {
     this.updateFilter();
   }
 
+  /** Reports whether the picker currently owns keyboard focus. */
   get focused(): boolean {
     return this._focused;
   }
 
+  /** Updates picker focus and forwards it to the filename search input. */
   set focused(value: boolean) {
     this._focused = value;
     this.search.focused = value;
   }
 
+  /** Builds the selectable list from the current filtered notes. */
   private createList(): SelectList {
     const items: SelectItem[] = this.filteredNotes.map((note) => ({
       value: note.relative,
@@ -103,6 +109,7 @@ export class HubbleNotePicker extends Container implements Focusable {
     return list;
   }
 
+  /** Recomputes filename matches and refreshes the visible note list. */
   private updateFilter(): void {
     const query = this.search.getValue().trim();
     this.filteredNotes = query ? fuzzyFilter(this.notes, query, (note) => note.relative) : this.notes;
@@ -112,6 +119,7 @@ export class HubbleNotePicker extends Container implements Focusable {
     this.tui.requestRender();
   }
 
+  /** Routes keyboard input to navigation or filename filtering. */
   handleInput(data: string): void {
     const isNavigation = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"].some((key) =>
       this.keybindings.matches(data, key)
@@ -126,6 +134,7 @@ export class HubbleNotePicker extends Container implements Focusable {
     this.tui.requestRender();
   }
 
+  /** Invalidates the picker and its child controls before a redraw. */
   override invalidate(): void {
     super.invalidate();
     this.search.invalidate();

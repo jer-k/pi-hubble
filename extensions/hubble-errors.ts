@@ -71,6 +71,7 @@ export type EditNoteError = EditValidationError | NoteNotFoundError | NoteReadEr
 export type DiscoveryError = VaultDiscoveryError;
 export type VaultNoteError = VaultPathError | NoteNotFoundError | NoteReadError;
 
+/** Converts a typed Hubble failure into the exception expected by tool callers. */
 export function throwHubbleError(error: HubbleFailure): never {
   throw new Error(error.message, { cause: error });
 }

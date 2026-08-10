@@ -37,6 +37,7 @@ export type ConfigError = ConfigReadError | ConfigParseError | InvalidConfigErro
 export type RootContext = Pick<ExtensionContext, "cwd" | "isProjectTrusted">;
 export type GetVault = (context: RootContext) => Promise<ResultType<Vault, ConfigError | VaultOpenErrorType>>;
 
+/** Expands a configured vault path relative to the current working directory. */
 function expandPath(value: string, cwd: string, source: string): ResultType<string, InvalidConfigError> {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -51,6 +52,7 @@ function expandPath(value: string, cwd: string, source: string): ResultType<stri
   return Result.ok(isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed));
 }
 
+/** Validates and normalizes the optional --hubble-dir flag value. */
 function getStringFlag(value: unknown): ResultType<string | undefined, InvalidConfigError> {
   if (value === undefined || value === null || value === false) return Result.ok(undefined);
 
@@ -63,6 +65,7 @@ function getStringFlag(value: unknown): ResultType<string | undefined, InvalidCo
   return Result.ok(value);
 }
 
+/** Reads and validates a Hubble root from one JSON configuration file. */
 async function readConfiguredRoot(
   configPath: string
 ): Promise<ResultType<string | undefined, ConfigReadError | ConfigParseError | InvalidConfigError>> {
@@ -111,7 +114,7 @@ async function readConfiguredRoot(
   return Result.ok(root);
 }
 
-/** Resolve config with CLI precedence. Project-local config is trusted-context only. */
+/** Resolves the vault root using CLI, trusted local, then global configuration precedence. */
 export async function resolveHubbleRoot(
   cliValue: unknown,
   cwd = process.cwd(),
@@ -146,6 +149,7 @@ export async function resolveHubbleRoot(
   return expandPath(configuredRoot, cwd, projectTrusted && localRoot.value !== undefined ? localPath : globalPath);
 }
 
+/** Identifies filesystem errors caused by a missing path. */
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }

@@ -25,14 +25,17 @@ export interface HubbleEdit {
 
 export type NoteReference = HubblePath;
 
+/** Identifies filesystem errors caused by a missing path. */
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
+/** Identifies filesystem errors caused by a filename collision. */
 function isExistingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
 
+/** Turns a note title into a filesystem-safe Markdown filename slug. */
 export function slugifyTitle(title: string): string {
   const slug = title
     .normalize("NFKD")
@@ -44,6 +47,7 @@ export function slugifyTitle(title: string): string {
   return slug || "note";
 }
 
+/** Validates and applies unique, non-overlapping exact-text replacements. */
 export function applyExactEditsResult(
   content: string,
   edits: HubbleEdit[],
@@ -96,19 +100,21 @@ export function applyExactEditsResult(
   return Result.ok(result);
 }
 
-/** Synchronous helper retained for callers that already have note contents. */
+/** Applies exact edits synchronously and throws when the edit set is invalid. */
 export function applyExactEdits(content: string, edits: HubbleEdit[], path: string): string {
   const result = applyExactEditsResult(content, edits, path);
   if (Result.isError(result)) throw result.error;
   return result.value;
 }
 
+/** Maps a filesystem read failure to the appropriate public note error. */
 function noteReadError(path: HubblePath, cause: unknown): NoteNotFoundError | NoteReadError {
   if (isMissingFileError(cause))
     return new NoteNotFoundError({ path: path.relative, message: "The requested Hubble note was not found." });
   return new NoteReadError({ path: path.relative, cause, message: "Could not read the requested Hubble note." });
 }
 
+/** Reads one validated vault file while distinguishing missing and unreadable notes. */
 export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
   const accessible = await Result.tryPromise({
     try: () => access(path.absolute, constants.R_OK),
@@ -129,6 +135,7 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
   );
 }
 
+/** Creates a uniquely named Markdown note and its optional parent folder. */
 export async function writeNewVaultFile(
   vault: VaultRoot,
   title: string,
@@ -238,6 +245,7 @@ export async function writeNewVaultFile(
   });
 }
 
+/** Appends Markdown to an existing vault file without replacing its contents. */
 export async function appendToVaultFile(path: HubblePath, content: string): Promise<ResultType<void, AppendNoteError>> {
   if (!content)
     return Result.err(
@@ -265,6 +273,7 @@ export async function appendToVaultFile(path: HubblePath, content: string): Prom
   });
 }
 
+/** Applies validated exact edits to an existing vault file. */
 export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Promise<ResultType<void, EditNoteError>> {
   return withFileMutationQueue(path.absolute, async () => {
     const current = await Result.tryPromise({
@@ -289,8 +298,10 @@ export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Prom
   });
 }
 
+/** Recursively discovers Markdown notes in a vault while ignoring symlinks. */
 export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<NoteReference[], DiscoveryError>> {
   const files: NoteReference[] = [];
+  /** Walks one vault directory and adds its Markdown files to the discovery list. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
     const entries = await Result.tryPromise({
       try: () => readdir(directory, { withFileTypes: true }),
