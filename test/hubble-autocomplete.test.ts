@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -94,8 +94,11 @@ test("returns no suggestions for expected failures but propagates defects", asyn
 
 test("suggests vault notes, delegates unrelated text, and handles cancellation", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-autocomplete-"));
+  await mkdir(join(root, "pi-hubble"));
   await writeFile(join(root, "alpha.md"), "alpha", "utf8");
   await writeFile(join(root, "beta.md"), "beta", "utf8");
+  await writeFile(join(root, "page.HTML"), "<p>page</p>", "utf8");
+  await writeFile(join(root, "pi-hubble", "long-note-name.html"), "<p>long</p>", "utf8");
   const { pi, getSessionStart } = createPi();
   registerHubbleAutocomplete(pi, async () => openVault(root));
 
@@ -125,8 +128,23 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
   expect(suggestions.items.map((item: { label: string }) => item.label)).toEqual([
     "@hubble/alpha.md",
     "@hubble/beta.md",
+    "@hubble/page.HTML",
+    "@hubble/pi-hubble/long-note-name.html",
   ]);
   expect(suggestions.items[0].value).toBe(`@${join(await realpath(root), "alpha.md")}`);
+
+  const scoped = await provider.getSuggestions(["@hubble/pi-hubble/"], 0, 18, {
+    signal: new AbortController().signal,
+  });
+  expect(scoped).toEqual({
+    prefix: "@hubble/pi-hubble/",
+    items: [
+      {
+        value: `@${join(await realpath(root), "pi-hubble", "long-note-name.html")}`,
+        label: "long-note-name.html",
+      },
+    ],
+  });
   expect(provider.applyCompletion(["@hubble/"], 0, 8, suggestions.items[0], "@hubble/")).toEqual({
     lines: ["done"],
     cursorLine: 0,

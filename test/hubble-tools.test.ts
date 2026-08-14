@@ -82,6 +82,56 @@ test("executes create, read, edit, append, and search tools", async () => {
   expect(search.details).toMatchObject({ query: "updated", matchCount: 1, truncated: false });
 });
 
+test("creates, reads, edits, and searches HTML through tools", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-html-tools-"));
+  const tools = register(async () => openVault(root));
+  const created = await tools.hubble_create.execute(
+    "create-html",
+    { title: "HTML & Tools", content: "<p>Alpha</p>", folder: "web", format: "html" },
+    undefined,
+    undefined,
+    context
+  );
+  expect(created.content[0].text).toBe("Created Hubble note: web/html-and-tools.html");
+  const path = join(root, "web", "html-and-tools.html");
+  expect(await readFile(path, "utf8")).toContain("<title>HTML &amp; Tools</title>");
+
+  const read = await tools.hubble_read.execute(
+    "read-html",
+    { path: "web/html-and-tools.html" },
+    undefined,
+    undefined,
+    context
+  );
+  expect(read.content[0].text).toContain("Path: web/html-and-tools.html");
+  expect(read.content[0].text).toContain("<p>Alpha</p>");
+
+  await tools.hubble_edit.execute(
+    "edit-html",
+    { path: "web/html-and-tools.html", edits: [{ oldText: "Alpha", newText: "Updated" }] },
+    undefined,
+    undefined,
+    context
+  );
+  const search = await tools.hubble_search.execute(
+    "search-html",
+    { query: "updated", limit: 10 },
+    undefined,
+    undefined,
+    context
+  );
+  expect(search.content[0].text).toContain("web/html-and-tools.html:9: <p>Updated</p>");
+  await expect(
+    tools.hubble_append.execute(
+      "append-html",
+      { path: "web/html-and-tools.html", content: "<footer>Later</footer>" },
+      undefined,
+      undefined,
+      context
+    )
+  ).rejects.toThrow("only supported for Markdown");
+});
+
 test("reports validation failures and honors cancellation", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-errors-"));
   const tools = register(async () => openVault(root));
@@ -90,7 +140,7 @@ test("reports validation failures and honors cancellation", async () => {
   );
   await expect(
     tools.hubble_read.execute("read", { path: "not-a-note.txt" }, undefined, undefined, context)
-  ).rejects.toThrow("Markdown");
+  ).rejects.toThrow("supported format");
 
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));

@@ -11,8 +11,16 @@ type CommandOptions = { getArgumentCompletions?: (prefix: string) => unknown; ha
 
 function createPi() {
   let command: { options: CommandOptions } | undefined;
-  const pi = { registerCommand(_name: string, options: CommandOptions) { command = { options }; } };
-  return { pi: pi as unknown as ExtensionAPI, getCommand: () => command };
+  const sentMessages: string[] = [];
+  const pi = {
+    registerCommand(_name: string, options: CommandOptions) {
+      command = { options };
+    },
+    sendUserMessage(message: string) {
+      sentMessages.push(message);
+    },
+  };
+  return { pi: pi as unknown as ExtensionAPI, getCommand: () => command, sentMessages };
 }
 
 function createContext(overrides: Record<string, unknown> = {}) {
@@ -25,15 +33,19 @@ function createContext(overrides: Record<string, unknown> = {}) {
     isIdle: () => true,
     ui: {
       getEditorText: () => editorText,
-      setEditorText: (text: string) => { editorText = text; },
+      setEditorText: (text: string) => {
+        editorText = text;
+      },
       notify: (message: string) => notifications.push(message),
       custom: async (factory: (...args: unknown[]) => unknown) => {
         let selected: unknown;
-        const component = factory({}, {}, {}, (value: unknown) => { selected = value; });
+        const component = factory({}, {}, {}, (value: unknown) => {
+          selected = value;
+        });
         void component;
         return selected;
       },
-      input: async () => undefined,
+      input: async (): Promise<string | undefined> => undefined,
     },
     ...overrides,
   };
@@ -69,9 +81,9 @@ test("registers find/search behavior and attaches a selected note", async () => 
   expect(noUi.notifications).toEqual(["/hubble requires interactive UI mode."]);
 });
 
-test("creates a titled note and handles an empty vault", async () => {
+test("creates titled Markdown and HTML notes and handles an empty vault", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-command-new-"));
-  const { pi, getCommand } = createPi();
+  const { pi, getCommand, sentMessages } = createPi();
   registerHubbleCommand(pi, () => getVault(root));
   const command = getCommand();
   const ctx = createContext();
@@ -79,11 +91,27 @@ test("creates a titled note and handles an empty vault", async () => {
   expect(ctx.notifications[0]).toBe("Created Hubble note: work/new-note.md");
   expect(ctx.getEditorText()).toContain(`@${join(await realpath(root), "work", "new-note.md")}`);
 
+  const html = createContext();
+  await command?.options.handler("new HTML page --folder=work --format html", html.ctx);
+  expect(html.notifications[0]).toBe("Created Hubble note: work/html-page.html");
+  expect(html.getEditorText()).toContain(`@${join(await realpath(root), "work", "html-page.html")}`);
+
+  const assisted = createContext();
+  assisted.ctx.ui.input = async () => "";
+  await command?.options.handler("new --format html --folder=work", assisted.ctx);
+  expect(sentMessages).toHaveLength(1);
+  expect(sentMessages[0]).toContain("HTML body fragment");
+  expect(sentMessages[0]).toContain('format to "html"');
+
+  const invalid = createContext();
+  await command?.options.handler("new Invalid --format pdf --folder=work", invalid.ctx);
+  expect(invalid.notifications).toEqual(["Hubble note format must be 'markdown' or 'html'."]);
+
   const emptyRoot = await mkdtemp(join(tmpdir(), "pi-hubble-command-empty-"));
   const empty = createContext();
   empty.ctx.ui.custom = async () => undefined;
   registerHubbleCommand(pi, () => getVault(emptyRoot));
   const secondCommand = getCommand();
   await secondCommand?.options.handler("find", empty.ctx);
-  expect(empty.notifications).toEqual(["The Hubble vault has no Markdown notes."]);
+  expect(empty.notifications).toEqual(["The Hubble vault has no notes."]);
 });

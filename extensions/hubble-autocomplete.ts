@@ -7,6 +7,15 @@ import type { NoteReference } from "./hubble-vault.ts";
 
 const MAX_AUTOCOMPLETE_ITEMS = 50;
 
+/** Returns the path portion not already represented by a scoped autocomplete query. */
+function scopedDisplayPath(path: string, query: string): string {
+  const slashIndex = query.lastIndexOf("/");
+  if (slashIndex === -1) return path;
+
+  const typedDirectory = query.slice(0, slashIndex + 1);
+  return path.toLowerCase().startsWith(typedDirectory.toLowerCase()) ? path.slice(typedDirectory.length) : path;
+}
+
 /** Extracts an active @hubble mention from the text before the cursor. */
 function extractHubblePrefix(textBeforeCursor: string): string | undefined {
   return textBeforeCursor.match(/(?:^|[ \t])(@hubble(?:\/[^\s]*)?)$/u)?.[1];
@@ -17,8 +26,9 @@ function autocompleteItems(files: NoteReference[], query: string): AutocompleteI
   const filtered = query ? fuzzyFilter(files, query, (file) => file.relative) : files;
   return filtered.slice(0, MAX_AUTOCOMPLETE_ITEMS).map((file) => ({
     value: attachmentValue(file.absolute),
-    label: `@hubble/${file.relative}`,
-    description: "Hubble Markdown note",
+    // Omitting descriptions lets Pi allocate the full popup width to long
+    // paths instead of restricting labels to its 32-column primary column.
+    label: query.includes("/") ? scopedDisplayPath(file.relative, query) : `@hubble/${file.relative}`,
   }));
 }
 

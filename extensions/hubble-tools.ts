@@ -1,6 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -22,26 +23,29 @@ export interface TruncatedOutput {
 }
 
 export const SearchParameters = Type.Object({
-  query: Type.String({ description: "Case-insensitive text to find in Markdown notes" }),
+  query: Type.String({ description: "Case-insensitive text to find in Hubble notes" }),
   limit: Type.Optional(
     Type.Integer({ minimum: 1, maximum: 500, description: "Maximum matching lines (default: 100)" })
   ),
 });
 
 const ReadParameters = Type.Object({
-  path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
+  path: Type.String({ description: "Supported note path relative to the Hubble vault" }),
   offset: Type.Optional(Type.Integer({ minimum: 1, description: "1-based starting line" })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000, description: "Maximum lines to return" })),
 });
 
 const CreateParameters = Type.Object({
-  title: Type.String({ description: "Note title; used for the Markdown heading and filename slug" }),
-  content: Type.String({ description: "Markdown body, without the title heading" }),
+  title: Type.String({ description: "Note title; used for the heading and filename slug" }),
+  content: Type.String({
+    description: "Note body without the title heading; Markdown text or an HTML body fragment according to format",
+  }),
   folder: Type.Optional(Type.String({ description: "Optional vault-relative folder for the new note" })),
+  format: Type.Optional(StringEnum(["markdown", "html"] as const, { description: "Note format (default: markdown)" })),
 });
 
 const EditParameters = Type.Object({
-  path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
+  path: Type.String({ description: "Supported note path relative to the Hubble vault" }),
   edits: Type.Array(
     Type.Object({
       oldText: Type.String({ description: "Exact existing text; it must occur once" }),
@@ -120,8 +124,8 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     name: "hubble_search",
     label: "Hubble Search",
     description:
-      "Search Markdown notes in the configured Hubble vault. Results are limited and truncated to 50KB or 2000 lines.",
-    promptSnippet: "Search Markdown notes in the configured Hubble vault",
+      "Search Markdown and HTML notes in the configured Hubble vault. HTML is searched as raw source. Results are limited and truncated to 50KB or 2000 lines.",
+    promptSnippet: "Search notes in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_search before hubble_read when you need to discover a note or locate text in the vault.",
       "Hubble tool paths are relative to the configured vault; do not use absolute paths or paths outside the vault.",
@@ -157,8 +161,8 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     name: "hubble_read",
     label: "Hubble Read",
     description:
-      "Read a Markdown note from the configured Hubble vault. The path is vault-relative; output is truncated to 50KB or 2000 lines.",
-    promptSnippet: "Read a Markdown note from the configured Hubble vault",
+      "Read a Markdown or HTML note from the configured Hubble vault. The path is vault-relative; output is truncated to 50KB or 2000 lines.",
+    promptSnippet: "Read a note from the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_read for notes discovered with hubble_search; pass the vault-relative path returned by Hubble tools.",
     ],
@@ -191,20 +195,20 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     name: "hubble_create",
     label: "Hubble Create",
     description:
-      "Create a new Markdown note in the configured Hubble vault without overwriting an existing note. Filenames are generated from the title.",
-    promptSnippet: "Create a new Markdown note in the configured Hubble vault",
+      "Create a new Markdown or HTML note in the configured Hubble vault without overwriting an existing note. Markdown is the default; HTML content is wrapped as a body fragment in a standalone document.",
+    promptSnippet: "Create a new Markdown or HTML note in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
     ],
     parameters: CreateParameters,
-    /** Creates a new Markdown note in the configured vault. */
+    /** Creates a new note in the requested format in the configured vault. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
       if (Result.isError(vault)) throwHubbleError(vault.error);
 
-      const created = unwrap(await vault.value.create(params.title, params.content, params.folder));
+      const created = unwrap(await vault.value.create(params.title, params.content, params.folder, params.format));
       return noteResult(`Created Hubble note: ${created.relative}`, { path: created.relative });
     },
   });
@@ -212,8 +216,9 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
   pi.registerTool({
     name: "hubble_edit",
     label: "Hubble Edit",
-    description: "Apply one or more unique exact-text replacements to a Markdown note in the configured Hubble vault.",
-    promptSnippet: "Apply exact edits to a Markdown note in the configured Hubble vault",
+    description:
+      "Apply one or more unique exact-text replacements to a Markdown or HTML note in the configured Hubble vault.",
+    promptSnippet: "Apply exact edits to a Hubble note in the configured vault",
     promptGuidelines: [
       "Use hubble_edit for targeted Hubble note changes; each oldText must match exactly once and edits must not overlap.",
     ],
@@ -236,10 +241,11 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
   pi.registerTool({
     name: "hubble_append",
     label: "Hubble Append",
-    description: "Append Markdown to an existing note in the configured Hubble vault, preserving the existing content.",
-    promptSnippet: "Append Markdown to an existing Hubble note",
+    description:
+      "Append Markdown to an existing Markdown note in the configured Hubble vault, preserving the existing content. HTML append is not supported.",
+    promptSnippet: "Append Markdown to an existing Hubble Markdown note",
     promptGuidelines: [
-      "Use hubble_append when adding a section or research result to an existing Hubble note without replacing its contents.",
+      "Use hubble_append only for Markdown notes when adding content without replacing the existing note.",
     ],
     parameters: AppendParameters,
     /** Appends Markdown to an existing vault note. */

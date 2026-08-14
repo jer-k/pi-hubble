@@ -3,6 +3,7 @@ import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result, type Result as ResultType } from "better-result";
 import type { GetVault } from "./hubble-config.ts";
 import type { HubbleFailure } from "./hubble-errors.ts";
+import type { HubbleNoteFormat } from "./hubble-paths.ts";
 import { attachmentValue, HubbleNotePicker } from "./hubble-ui.ts";
 import type { NoteReference, Vault } from "./hubble-vault.ts";
 
@@ -44,21 +45,36 @@ function unquote(value: string): string {
   return value;
 }
 
-/** Parses the /hubble new syntax, including its optional folder flag. */
-function parseNewCommand(args: string): { title: string; folder?: string } | undefined {
+interface NewCommandSelection {
+  title: string;
+  folder?: string;
+  format?: string;
+}
+
+/** Removes one named value flag from command text and returns its value. */
+function extractValueFlag(remainder: string, name: string): { remainder: string; value?: string } {
+  const flag = remainder.match(new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|(\\S+))`, "u"));
+  if (flag?.index === undefined) return { remainder };
+
+  return {
+    remainder: `${remainder.slice(0, flag.index)} ${remainder.slice(flag.index + flag[0].length)}`.trim(),
+    value: flag[1] ?? flag[2] ?? flag[3] ?? "",
+  };
+}
+
+/** Parses the /hubble new syntax, including optional folder and format flags. */
+function parseNewCommand(args: string): NewCommandSelection | undefined {
   const match = args.trim().match(/^new(?:\s+([\s\S]*))?$/iu);
   if (!match) return undefined;
 
-  let remainder = match[1]?.trim() ?? "";
-  let folder: string | undefined;
-  const folderMatch = remainder.match(/(?:^|\s)--folder(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/u);
-  if (folderMatch?.index !== undefined) {
-    folder = folderMatch[1] ?? folderMatch[2] ?? folderMatch[3] ?? "";
-    remainder =
-      `${remainder.slice(0, folderMatch.index)} ${remainder.slice(folderMatch.index + folderMatch[0].length)}`.trim();
-  }
+  const folder = extractValueFlag(match[1]?.trim() ?? "", "folder");
+  const format = extractValueFlag(folder.remainder, "format");
+  return { title: unquote(format.remainder), folder: folder.value, format: format.value };
+}
 
-  return { title: unquote(remainder), folder };
+/** Narrows a command-line value to a supported Hubble creation format. */
+function isNoteFormat(format: string): format is HubbleNoteFormat {
+  return format === "markdown" || format === "html";
 }
 
 /** Selects notes by filename or searches their contents for the command picker. */
@@ -92,6 +108,11 @@ async function handleNewNote(
   }
   const parsed = parseNewCommand(args);
   if (!parsed) return;
+  const requestedFormat = parsed.format?.toLowerCase() ?? "markdown";
+  if (!isNoteFormat(requestedFormat)) {
+    ctx.ui.notify("Hubble note format must be 'markdown' or 'html'.", "warning");
+    return;
+  }
   let title = parsed.title.trim();
 
   if (!title) {
@@ -115,8 +136,12 @@ async function handleNewNote(
     const folderInstruction = folder
       ? ` Use the vault-relative folder ${JSON.stringify(folder)}.`
       : " Use the vault root.";
+    const contentInstruction =
+      requestedFormat === "html"
+        ? 'write a clear HTML body fragment summarizing the relevant investigation. Set format to "html"'
+        : 'write a clear Markdown body summarizing the relevant investigation. Set format to "markdown"';
     pi.sendUserMessage(
-      `Create a new Hubble note for the current conversation. Choose a concise, useful title yourself and write a clear Markdown body summarizing the relevant investigation.${folderInstruction} Use hubble_create, do not overwrite an existing note, and report the created path when finished.`
+      `Create a new Hubble note for the current conversation. Choose a concise, useful title yourself and ${contentInstruction}.${folderInstruction} Use hubble_create, do not overwrite an existing note, and report the created path when finished.`
     );
     ctx.ui.notify("Asked the agent to create a Hubble note and choose its title.", "info");
     return;
@@ -128,7 +153,7 @@ async function handleNewNote(
     return;
   }
 
-  const created = await vault.value.create(title, "", folder);
+  const created = await vault.value.create(title, "", folder, requestedFormat);
   if (Result.isError(created)) {
     ctx.ui.notify(created.error.message, "error");
     return;
@@ -141,11 +166,12 @@ async function handleNewNote(
 /** Registers the /hubble command for finding, attaching, and creating notes. */
 export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerCommand("hubble", {
-    description: "Find and attach a Markdown note from the Hubble vault",
+    description: "Find, attach, or create a note in the Hubble vault",
     /** Supplies completion entries for the /hubble subcommands. */
     getArgumentCompletions(prefix) {
       const items: AutocompleteItem[] = [
-        { value: "new", label: "new", description: "Create a new Hubble note" },
+        { value: "new", label: "new", description: "Create a Markdown note (supports --format html)" },
+        { value: "new --format html", label: "new --format html", description: "Create an HTML note" },
         { value: "find", label: "find", description: "Find note filenames" },
         { value: "search", label: "search", description: "Search note contents" },
       ];
@@ -178,7 +204,7 @@ export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): voi
       }
 
       if (notes.value.length === 0) {
-        ctx.ui.notify(query ? `No Hubble notes matched: ${query}` : "The Hubble vault has no Markdown notes.", "info");
+        ctx.ui.notify(query ? `No Hubble notes matched: ${query}` : "The Hubble vault has no notes.", "info");
         return;
       }
 

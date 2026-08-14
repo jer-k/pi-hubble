@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { extname, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
 import {
@@ -19,7 +19,13 @@ import {
   NoteWriteError,
   VaultDiscoveryError,
 } from "./hubble-errors.ts";
-import { type HubblePath, resolveVaultDirectory, type VaultRoot } from "./hubble-paths.ts";
+import {
+  type HubbleNoteFormat,
+  type HubblePath,
+  isNotePath,
+  resolveVaultDirectory,
+  type VaultRoot,
+} from "./hubble-paths.ts";
 
 export interface HubbleEdit {
   oldText: string;
@@ -28,7 +34,7 @@ export interface HubbleEdit {
 
 export type NoteReference = HubblePath;
 
-/** Turns a note title into a filesystem-safe Markdown filename slug. */
+/** Turns a note title into a filesystem-safe filename slug. */
 export function slugifyTitle(title: string): string {
   const slug = title
     .normalize("NFKD")
@@ -133,12 +139,39 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
   );
 }
 
-/** Creates a uniquely named Markdown note and its optional parent folder. */
+/** Escapes text before embedding it in an HTML text context. */
+function escapeHtml(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+/** Builds a standalone HTML document around a caller-supplied body fragment. */
+function htmlDocument(title: string, content: string): string {
+  const escapedTitle = escapeHtml(title);
+  const bodyContent = content ? `\n${content}` : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${escapedTitle}</title>
+</head>
+<body>
+  <h1>${escapedTitle}</h1>${bodyContent}
+</body>
+</html>`;
+}
+
+/** Creates a uniquely named note in the requested format and optional folder. */
 export async function writeNewVaultFile(
   vault: VaultRoot,
   title: string,
   content: string,
-  folder = ""
+  folder = "",
+  format: HubbleNoteFormat = "markdown"
 ): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
   if (!trimmedTitle)
@@ -175,9 +208,10 @@ export async function writeNewVaultFile(
     if (Result.isError(directoryCreated)) return directoryCreated;
 
     const slug = slugifyTitle(trimmedTitle);
-    const body = `# ${trimmedTitle}\n\n${content}`;
+    const extension = format === "html" ? ".html" : ".md";
+    const body = format === "html" ? htmlDocument(trimmedTitle, content) : `# ${trimmedTitle}\n\n${content}`;
     for (let suffix = 0; suffix < 10_000; suffix++) {
-      const filename = `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}.md`;
+      const filename = `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}${extension}`;
       const absolute = join(directory.value.absolute, filename);
       const relativePath = directory.value.relative ? `${directory.value.relative}/${filename}` : filename;
       const opened = await Result.tryPromise({
@@ -296,10 +330,10 @@ export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Prom
   });
 }
 
-/** Recursively discovers Markdown notes in a vault while ignoring symlinks. */
-export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<NoteReference[], DiscoveryError>> {
+/** Recursively discovers supported Hubble notes while ignoring symlinks. */
+export async function listNoteFiles(vault: VaultRoot): Promise<ResultType<NoteReference[], DiscoveryError>> {
   const files: NoteReference[] = [];
-  /** Walks one vault directory and adds its Markdown files to the discovery list. */
+  /** Walks one vault directory and adds its supported note files to the discovery list. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
     const entries = await Result.tryPromise({
       try: () => readdir(directory, { withFileTypes: true }),
@@ -320,7 +354,7 @@ export async function listMarkdownFiles(vault: VaultRoot): Promise<ResultType<No
       if (entry.isDirectory()) {
         const visited = await visit(absolute);
         if (Result.isError(visited)) return visited;
-      } else if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") {
+      } else if (entry.isFile() && isNotePath(entry.name)) {
         files.push({ absolute, relative: relative(vault.root, absolute).split(sep).join("/") });
       }
     }

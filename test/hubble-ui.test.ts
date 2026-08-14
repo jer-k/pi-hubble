@@ -11,7 +11,7 @@ const keybindings = {
 };
 const notes = [
   { absolute: "/vault/alpha.md", relative: "alpha.md" },
-  { absolute: "/vault/project.md", relative: "project.md" },
+  { absolute: "/vault/project.html", relative: "project.html" },
 ];
 
 test("renders notes, filters text, tracks focus, and attaches selections", () => {
@@ -31,11 +31,12 @@ test("renders notes, filters text, tracks focus, and attaches selections", () =>
   expect(picker.focused).toBe(false);
   picker.focused = true;
   expect(picker.focused).toBe(true);
-  expect(picker.render(80).join("\n")).toContain("project.md");
+  expect(picker.render(80).join("\n")).toContain("project.html");
+  expect(picker.render(80).join("\n")).toContain("HTML note");
   expect(picker.render(80).join("\n")).not.toContain("alpha.md");
 
   picker.handleInput("\r");
-  expect(selected?.relative).toBe("project.md");
+  expect(selected?.relative).toBe("project.html");
   expect(renders).toBeGreaterThan(0);
 });
 

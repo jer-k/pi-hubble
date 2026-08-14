@@ -91,7 +91,7 @@ export class HubbleNotePicker extends Container implements Focusable {
     const items: SelectItem[] = this.filteredNotes.map((note) => ({
       value: note.relative,
       label: note.relative,
-      description: "Markdown note",
+      description: note.relative.toLowerCase().endsWith(".html") ? "HTML note" : "Markdown note",
     }));
     const list = new SelectList(items, Math.min(MAX_VISIBLE_NOTES, Math.max(items.length, 1)), {
       selectedPrefix: (text) => this.theme.fg("accent", text),

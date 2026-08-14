@@ -10,6 +10,8 @@ import {
   type VaultPathReason,
 } from "./hubble-errors.ts";
 
+export type HubbleNoteFormat = "markdown" | "html";
+
 export interface HubblePath {
   absolute: string;
   relative: string;
@@ -257,10 +259,28 @@ export function resolveVaultDirectory(vault: VaultRoot, userPath: string): Promi
   return resolveContained(vault, userPath, "folder");
 }
 
-/** Ensures a resolved vault target points to a Markdown document. */
-export function assertMarkdownPath(path: HubblePath): ResultType<void, VaultPathError> {
-  if (extname(path.relative.toLowerCase()) !== ".md") {
-    return Result.err(pathError(path.relative, "not-markdown", "Hubble document must be a Markdown file."));
+/** Returns the supported note format for a path or a structured format error. */
+export function noteFormat(path: HubblePath): ResultType<HubbleNoteFormat, VaultPathError> {
+  switch (extname(path.relative).toLowerCase()) {
+    case ".md":
+      return Result.ok("markdown");
+    case ".html":
+      return Result.ok("html");
+    default:
+      return Result.err(
+        pathError(path.relative, "unsupported-note-format", "Hubble notes must use a supported format (.md or .html).")
+      );
   }
-  return Result.ok();
+}
+
+/** Reports whether a filename has a supported Hubble note extension. */
+export function isNotePath(path: string): boolean {
+  const extension = extname(path).toLowerCase();
+  return extension === ".md" || extension === ".html";
+}
+
+/** Ensures a resolved vault target points to a supported Hubble note. */
+export function assertNotePath(path: HubblePath): ResultType<void, VaultPathError> {
+  const format = noteFormat(path);
+  return Result.isError(format) ? format : Result.ok();
 }

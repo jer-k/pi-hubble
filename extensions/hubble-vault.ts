@@ -12,12 +12,19 @@ import {
   appendToVaultFile,
   editVaultFile,
   type HubbleEdit,
-  listMarkdownFiles,
+  listNoteFiles,
   type NoteReference,
   readVaultFile,
   writeNewVaultFile,
 } from "./hubble-notes.ts";
-import { assertMarkdownPath, canonicalVaultRoot, resolveVaultPath, type VaultRoot } from "./hubble-paths.ts";
+import {
+  assertNotePath,
+  canonicalVaultRoot,
+  type HubbleNoteFormat,
+  noteFormat,
+  resolveVaultPath,
+  type VaultRoot,
+} from "./hubble-paths.ts";
 
 export type { HubbleEdit, NoteReference } from "./hubble-notes.ts";
 
@@ -44,7 +51,7 @@ export type VaultAppendResult = ResultType<NoteReference, AppendNoteError | Vaul
 export type VaultListResult = ResultType<NoteReference[], DiscoveryError>;
 
 /**
- * The high-level Hubble seam. Path security, Markdown validation, and note
+ * The high-level Hubble seam. Path security, note-format validation, and
  * storage are deliberately hidden behind this small constructed interface.
  */
 export class Vault implements VaultRoot {
@@ -61,12 +68,12 @@ export class Vault implements VaultRoot {
     return Result.isError(resolved) ? resolved : Result.ok(new Vault(resolved.value));
   }
 
-  /** Lists all Markdown notes currently stored in the vault. */
+  /** Lists all supported notes currently stored in the vault. */
   async list(): Promise<VaultListResult> {
-    return listMarkdownFiles(this);
+    return listNoteFiles(this);
   }
 
-  /** Searches every Markdown note for case-insensitive line matches. */
+  /** Searches every supported note's raw text for case-insensitive line matches. */
   async search(query: string, signal?: AbortSignal): Promise<VaultSearchResult> {
     const normalized = query.trim().toLowerCase();
     if (!normalized)
@@ -92,13 +99,13 @@ export class Vault implements VaultRoot {
     return Result.ok(results);
   }
 
-  /** Resolves, validates, and reads one Markdown note from the vault. */
+  /** Resolves, validates, and reads one supported note from the vault. */
   async read(path: string): Promise<VaultReadResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
 
-    const markdown = assertMarkdownPath(resolved.value);
-    if (Result.isError(markdown)) return markdown;
+    const supported = assertNotePath(resolved.value);
+    if (Result.isError(supported)) return supported;
 
     const content = await readVaultFile(resolved.value);
     if (Result.isError(content)) return content;
@@ -106,18 +113,23 @@ export class Vault implements VaultRoot {
     return Result.ok({ note: resolved.value, content: content.value });
   }
 
-  /** Creates a uniquely named Markdown note in the requested vault folder. */
-  async create(title: string, content: string, folder = ""): Promise<VaultCreateResult> {
-    return writeNewVaultFile(this, title, content, folder);
+  /** Creates a uniquely named note, defaulting to Markdown, in the requested folder. */
+  async create(
+    title: string,
+    content: string,
+    folder = "",
+    format: HubbleNoteFormat = "markdown"
+  ): Promise<VaultCreateResult> {
+    return writeNewVaultFile(this, title, content, folder, format);
   }
 
-  /** Applies exact-text edits to one validated Markdown note. */
+  /** Applies exact-text edits to one validated supported note. */
   async edit(path: string, edits: HubbleEdit[]): Promise<VaultEditResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
 
-    const markdown = assertMarkdownPath(resolved.value);
-    if (Result.isError(markdown)) return markdown;
+    const supported = assertNotePath(resolved.value);
+    if (Result.isError(supported)) return supported;
 
     const edited = await editVaultFile(resolved.value, edits);
     if (Result.isError(edited)) return edited;
@@ -125,13 +137,22 @@ export class Vault implements VaultRoot {
     return Result.ok(resolved.value);
   }
 
-  /** Appends Markdown to one validated note without replacing existing content. */
+  /** Appends Markdown to a Markdown note; HTML append is intentionally unsupported. */
   async append(path: string, content: string): Promise<VaultAppendResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
 
-    const markdown = assertMarkdownPath(resolved.value);
-    if (Result.isError(markdown)) return markdown;
+    const format = noteFormat(resolved.value);
+    if (Result.isError(format)) return format;
+    if (format.value === "html") {
+      return Result.err(
+        new NoteValidationError({
+          reason: "append",
+          path: resolved.value.relative,
+          message: "Appending is only supported for Markdown notes.",
+        })
+      );
+    }
 
     const appended = await appendToVaultFile(resolved.value, content);
     if (Result.isError(appended)) return appended;

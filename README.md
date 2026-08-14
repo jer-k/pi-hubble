@@ -1,6 +1,6 @@
 # pi-hubble
 
-Pi extension for searching, reading, and editing notes in [Hubble.md](https://hubble.md).
+Pi extension for searching, reading, creating, and editing Markdown and HTML notes in [Hubble.md](https://hubble.md).
 
 ## Install
 
@@ -49,36 +49,45 @@ The extension registers these Pi tools:
 
 - `hubble_search(query, limit?)` searches note contents case-insensitively and
   returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
-- `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown path.
-  `offset` is a 1-based line number; `limit` controls the number of lines.
-- `hubble_create(title, content, folder?)` creates a new note, optionally in a
-  vault-relative folder.
+- `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
+  path. `offset` is a 1-based line number; `limit` controls the number of lines.
+- `hubble_create(title, content, folder?, format?)` creates a new note,
+  optionally in a vault-relative folder. `format` is `markdown` (the default)
+  or `html`.
 - `hubble_edit(path, edits)` applies exact, unique, non-overlapping text
-  replacements.
-- `hubble_append(path, content)` appends Markdown to an existing note.
+  replacements to Markdown or HTML.
+- `hubble_append(path, content)` appends Markdown to an existing Markdown note.
+  HTML append is intentionally unsupported to avoid producing malformed HTML.
 
-All document paths are relative to the configured vault and must point to
-Markdown files. Search and read output is limited to 50 KB or 2,000 lines; when
-output is truncated, the complete result is saved to a temporary file.
+All document paths are relative to the configured vault and must use `.md` or
+`.html` (case-insensitively). Search operates line-by-line on note source, so
+HTML is searched as raw source. Search and read output is limited to 50 KB or
+2,000 lines; when output is truncated, the complete result is saved to a
+temporary file.
 
-`hubble_create` writes a `# Title` heading, converts the title into a Markdown
-filename slug, and never overwrites an existing note. If the slug already
-exists, it creates a numbered filename such as `my-note-2.md`.
+`hubble_create` converts the title into a filename slug and never overwrites an
+existing note. Markdown creation preserves the `# Title` heading behavior. HTML
+creation escapes the title and wraps `content` as a body fragment in a valid
+standalone document. Collisions are format-specific, producing names such as
+`my-note-2.md` or `my-note-2.html`.
 
 Writes are serialized with Pi's file mutation queue. Paths are checked against
-path traversal and symlink escapes, and Markdown discovery recursively scans
-the vault while skipping symlinks.
+path traversal and symlink escapes, and note discovery recursively scans the
+vault while skipping symlinks.
 
 ## Interactive discovery
 
-- `@hubble/` autocomplete for attaching a vault note to the prompt
+- `@hubble/` autocomplete for attaching a vault note to the prompt; after typing
+  a folder prefix, suggestions show only the remaining path so filename endings
+  and extensions remain visible
 - `/hubble find <query>` to find note filenames explicitly
 - `/hubble search <query>` to search note contents
-- `/hubble new [title] [--folder <folder>]` to create and attach a blank note
+- `/hubble new [title] [--format markdown|html] [--folder <folder>]` to create
+  and attach a blank note
 
-`/hubble new` prompts for a title and an optional vault-relative folder. If the
-title is left blank, the agent chooses a title and drafts the note using
-`hubble_create` when it is idle.
+`/hubble new` defaults to Markdown and prompts for a title and an optional
+vault-relative folder. If the title is left blank, the agent chooses a title
+and drafts the requested note format using `hubble_create` when it is idle.
 
 After selecting a note, its absolute path is inserted as a normal Pi `@` file
 reference, so the note is attached to the current prompt.

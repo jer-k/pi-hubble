@@ -38,13 +38,13 @@ beforeEach(() => {
   fsMocks.writeFile.mockImplementation(actualFs.writeFile);
 });
 
-test("classifies create open failures through Vault.create", async () => {
+test("classifies HTML create open failures through Vault.create", async () => {
   const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-open-"));
   const vault = await vaultAt(root);
   const cause = systemError("permission denied", "EACCES");
   fsMocks.open.mockRejectedValueOnce(cause);
 
-  const result = await vault.create("Open Failure", "body");
+  const result = await vault.create("Open Failure", "<p>body</p>", "", "html");
   expect(result.status).toBe("error");
   if (result.status === "error") {
     expect(result.error._tag).toBe("NoteWriteError");

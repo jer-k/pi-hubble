@@ -23,7 +23,7 @@ non-obvious.
 ## Vault safety
 
 All user-supplied vault paths must remain vault-relative, reject traversal and
-absolute paths, reject symlink escapes, and only operate on Markdown files.
+absolute paths, reject symlink escapes, and only operate on supported Hubble note files.
 Use the existing path-resolution helpers rather than joining user input
 directly.
 

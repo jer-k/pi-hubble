@@ -39,7 +39,7 @@ export type VaultPathReason =
   | "escape"
   | "symlink-escape"
   | "not-directory"
-  | "not-markdown"
+  | "unsupported-note-format"
   | "filesystem";
 
 export class VaultPathError extends TaggedError("VaultPathError")<{

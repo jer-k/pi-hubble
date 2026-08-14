@@ -81,7 +81,7 @@ function runPi(vault: string): Promise<RpcMessage[]> {
         `${JSON.stringify({
           id: "create",
           type: "prompt",
-          message: "/hubble new Integration Smoke --folder=checks",
+          message: "/hubble new Integration Smoke --format html --folder=checks",
         })}\n`
       );
     });
@@ -176,16 +176,18 @@ test("loads the checkout through Pi and creates a note using --hubble-dir", asyn
       expect.objectContaining({
         type: "extension_ui_request",
         method: "notify",
-        message: "Created Hubble note: checks/integration-smoke.md",
+        message: "Created Hubble note: checks/integration-smoke.html",
         notifyType: "info",
       })
     );
     const editorRequest = messages.find(
       (message) => message.type === "extension_ui_request" && message.method === "set_editor_text"
     );
-    expect(String(editorRequest?.text).replaceAll("\\", "/")).toMatch(/^@.*\/checks\/integration-smoke\.md$/u);
+    expect(String(editorRequest?.text).replaceAll("\\", "/")).toMatch(/^@.*\/checks\/integration-smoke\.html$/u);
     expect(messages.some((message) => message.type === "extension_error")).toBe(false);
-    expect(await readFile(join(vault, "checks", "integration-smoke.md"), "utf8")).toBe("# Integration Smoke\n\n");
+    expect(await readFile(join(vault, "checks", "integration-smoke.html"), "utf8")).toContain(
+      "<h1>Integration Smoke</h1>"
+    );
   } finally {
     await rm(vault, { recursive: true, force: true });
   }
@@ -266,6 +268,35 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
     expect(await readFile(join(vault, "checks", "integration-tool-note.md"), "utf8")).toBe(
       "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma"
     );
+
+    const htmlCreated = await getTool(session, "hubble_create").execute(
+      "create-html",
+      {
+        title: "Integration HTML",
+        content: "<section>HTML Integration Match</section>",
+        folder: "checks",
+        format: "html",
+      },
+      undefined,
+      undefined
+    );
+    expect(toolText(htmlCreated)).toBe("Created Hubble note: checks/integration-html.html");
+
+    const htmlRead = await getTool(session, "hubble_read").execute(
+      "read-html",
+      { path: "checks/integration-html.html" },
+      undefined,
+      undefined
+    );
+    expect(toolText(htmlRead)).toContain("<section>HTML Integration Match</section>");
+
+    const htmlSearch = await getTool(session, "hubble_search").execute(
+      "search-html",
+      { query: "html integration match", limit: 10 },
+      undefined,
+      undefined
+    );
+    expect(toolText(htmlSearch)).toBe("checks/integration-html.html:9: <section>HTML Integration Match</section>");
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });
@@ -278,6 +309,7 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
   await mkdir(join(vault, "notes"), { recursive: true });
   await writeFile(join(vault, "alpha.md"), "# Alpha", "utf8");
   await writeFile(join(vault, "notes", "beta.md"), "# Beta", "utf8");
+  await writeFile(join(vault, "page.html"), "<h1>Page</h1>", "utf8");
   await writeFile(join(vault, "ignored.txt"), "not a note", "utf8");
   const session = await createIntegrationSession(workspace, vault);
 
@@ -313,7 +345,11 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
     });
 
     const all = await provider.getSuggestions(["@hubble/"], 0, 8, { signal });
-    expect(all?.items.map((item) => item.label)).toEqual(["@hubble/alpha.md", "@hubble/notes/beta.md"]);
+    expect(all?.items.map((item) => item.label)).toEqual([
+      "@hubble/alpha.md",
+      "@hubble/notes/beta.md",
+      "@hubble/page.html",
+    ]);
 
     const filtered = await provider.getSuggestions(["@hubble/bet"], 0, 11, { signal });
     expect(filtered).toEqual({
@@ -322,7 +358,26 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
         {
           value: `@${join(await realpath(vault), "notes", "beta.md")}`,
           label: "@hubble/notes/beta.md",
-          description: "Hubble Markdown note",
+        },
+      ],
+    });
+
+    expect(await provider.getSuggestions(["@hubble/notes/"], 0, 14, { signal })).toEqual({
+      prefix: "@hubble/notes/",
+      items: [
+        {
+          value: `@${join(await realpath(vault), "notes", "beta.md")}`,
+          label: "beta.md",
+        },
+      ],
+    });
+
+    expect(await provider.getSuggestions(["@hubble/page"], 0, 12, { signal })).toEqual({
+      prefix: "@hubble/page",
+      items: [
+        {
+          value: `@${join(await realpath(vault), "page.html")}`,
+          label: "@hubble/page.html",
         },
       ],
     });

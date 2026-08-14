@@ -38,17 +38,25 @@ test("keeps Vault operations inside the root and protects symlinks", async () =>
   const parent = await mkdtemp(join(tmpdir(), "pi-hubble-vault-"));
   const root = join(parent, "vault");
   const outside = join(parent, "outside.md");
+  const outsideHtml = join(parent, "outside.html");
   await writeFile(outside, "outside", "utf8");
+  await writeFile(outsideHtml, "<p>outside</p>", "utf8");
   const vault = await vaultAt(root);
   const note = await vault.create("My Note", "body");
   if (note.status === "error") throw note.error;
 
   const traversal = await vault.read("../outside.md");
   expect(traversal.status).toBe("error");
+  expect((await vault.read("../outside.html")).status).toBe("error");
   await symlink(outside, join(root, "escape.md"));
   const symlinkEscape = await vault.read("escape.md");
   expect(symlinkEscape.status).toBe("error");
   if (symlinkEscape.status === "error") expect(symlinkEscape.error._tag).toBe("VaultPathError");
+
+  await symlink(outsideHtml, join(root, "escape.html"));
+  const htmlSymlinkEscape = await vault.read("escape.html");
+  expect(htmlSymlinkEscape.status).toBe("error");
+  if (htmlSymlinkEscape.status === "error") expect(htmlSymlinkEscape.error._tag).toBe("VaultPathError");
 });
 
 test("supports structured search and serialized exact mutations", async () => {
@@ -74,6 +82,76 @@ test("supports structured search and serialized exact mutations", async () => {
 
   const invalid = await vault.edit(first.value.relative, [{ oldText: "same", newText: "same" }]);
   expect(invalid.status).toBe("error");
+});
+
+test("discovers, reads, searches, and edits Markdown and HTML notes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-html-vault-"));
+  await writeFile(join(root, "alpha.md"), "# Alpha\n\nMarkdown match", "utf8");
+  await writeFile(join(root, "page.HTML"), "<main>HTML match</main>", "utf8");
+  await writeFile(join(root, "upper.MD"), "# Upper", "utf8");
+  await writeFile(join(root, "ignored.txt"), "ignored match", "utf8");
+  const vault = await vaultAt(root);
+
+  const listed = await vault.list();
+  expect(listed.status).toBe("ok");
+  if (listed.status === "ok") {
+    expect(listed.value.map((note) => note.relative)).toEqual(["alpha.md", "page.HTML", "upper.MD"]);
+  }
+
+  const read = await vault.read("page.HTML");
+  expect(read.status).toBe("ok");
+  if (read.status === "ok") expect(read.value.content).toBe("<main>HTML match</main>");
+
+  const search = await vault.search("match");
+  expect(search.status).toBe("ok");
+  if (search.status === "ok")
+    expect(search.value.map((result) => result.note.relative)).toEqual(["alpha.md", "page.HTML"]);
+
+  const edited = await vault.edit("page.HTML", [{ oldText: "HTML match", newText: "updated source" }]);
+  expect(edited.status).toBe("ok");
+  expect(await readFile(join(root, "page.HTML"), "utf8")).toBe("<main>updated source</main>");
+
+  const append = await vault.append("page.HTML", "<footer>later</footer>");
+  expect(append.status).toBe("error");
+  if (append.status === "error") {
+    expect(append.error._tag).toBe("NoteValidationError");
+    if (append.error._tag === "NoteValidationError") expect(append.error.reason).toBe("append");
+  }
+
+  const unsupported = await vault.read("ignored.txt");
+  expect(unsupported.status).toBe("error");
+  if (unsupported.status === "error") {
+    expect(unsupported.error._tag).toBe("VaultPathError");
+    if (unsupported.error._tag === "VaultPathError") expect(unsupported.error.reason).toBe("unsupported-note-format");
+  }
+});
+
+test("creates standalone HTML notes with escaped titles and format-specific collisions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-html-create-"));
+  const vault = await vaultAt(root);
+  const title = '<A & "B">';
+  const first = await vault.create(title, "<p>Alpha & beta</p>", "web/pages", "html");
+  const second = await vault.create(title, "<p>Second</p>", "web/pages", "html");
+  const markdown = await vault.create(title, "default", "web/pages");
+  if (first.status === "error" || second.status === "error" || markdown.status === "error") {
+    throw new Error("create failed");
+  }
+
+  expect(first.value.relative).toBe("web/pages/a-and-b.html");
+  expect(second.value.relative).toBe("web/pages/a-and-b-2.html");
+  expect(markdown.value.relative).toBe("web/pages/a-and-b.md");
+  expect(await readFile(first.value.absolute, "utf8")).toBe(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>&lt;A &amp; &quot;B&quot;&gt;</title>
+</head>
+<body>
+  <h1>&lt;A &amp; &quot;B&quot;&gt;</h1>
+<p>Alpha & beta</p>
+</body>
+</html>`);
+  expect(await readFile(markdown.value.absolute, "utf8")).toBe(`# ${title}\n\ndefault`);
 });
 
 test("creates notes in optional folders and rejects invalid edits", async () => {
