@@ -12,11 +12,16 @@
     "lint": "biome lint .",
     "typecheck": "tsc --noEmit",
     "format": "biome format --write .",
-    "check": "biome check --write ."
+    "check": "biome check --write .",
+    "sync:skills": "node ./scripts/sync-hubble-skills.mjs",
+    "check:skills": "node ./scripts/sync-hubble-skills.mjs --check"
   },
   "pi": {
     "extensions": [
       "./extensions/hubble.ts"
+    ],
+    "skills": [
+      "./skills/create-html-app"
     ]
   },
   "peerDependencies": {

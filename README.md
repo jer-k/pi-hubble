@@ -1,6 +1,6 @@
 # pi-hubble
 
-Pi extension for searching, reading, creating, and editing Markdown and HTML notes in [Hubble.md](https://hubble.md).
+Pi package for searching, reading, creating, and editing Markdown and HTML notes in [Hubble.md](https://hubble.md). It bundles the extension and Hubble's upstream HTML App skill.
 
 ## Install
 
@@ -21,6 +21,23 @@ For development, load the extension directly:
 ```bash
 pi -e ./extensions/hubble.ts
 ```
+
+Loading the extension file directly does not load the bundled skill. Use `pi -e /path/to/pi-hubble` when testing the complete package.
+
+## Bundled skill
+
+The package includes Hubble's upstream `create-html-app` skill. It teaches Pi to build folder-local HTML Apps with Hubble's injected Alpine, Tailwind, theme-token, and Files API runtime.
+
+The contents under `skills/` are vendored verbatim from [`bholmesdev/hubble-skills`](https://github.com/bholmesdev/hubble-skills). Do not edit them locally. `skills/upstream.json` records the source ref and exact commit.
+
+To update the vendored copy manually or verify it against the latest upstream `main` branch:
+
+```bash
+npm run sync:skills
+npm run check:skills
+```
+
+The weekly `sync-hubble-skills` GitHub Actions workflow runs the same sync and opens or updates a pull request when upstream changes.
 
 ## Vault configuration
 
@@ -108,6 +125,12 @@ Run the Pi CLI integration smoke test separately:
 
 ```bash
 npm run test:integration
+```
+
+Check whether the bundled skills match the latest upstream revision (requires network access and Git):
+
+```bash
+npm run check:skills
 ```
 
 The integration suite uses the project-local Pi executable to exercise `/hubble new` through RPC mode with `--hubble-dir`. It also loads this checkout through Pi's SDK runtime to exercise every Hubble tool and the `@hubble/` autocomplete provider without requiring an LLM or API credentials.
