@@ -69,7 +69,7 @@ export function applyExactEditsResult(
         new EditValidationError({ path, reason: "missing", message: "Could not find an exact edit match." })
       );
     }
-    const second = content.indexOf(edit.oldText, first + edit.oldText.length);
+    const second = content.indexOf(edit.oldText, first + 1);
     if (second !== -1) {
       return Result.err(
         new EditValidationError({ path, reason: "duplicate", message: "An edit's oldText is not unique." })

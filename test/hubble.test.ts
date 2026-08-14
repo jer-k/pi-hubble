@@ -102,6 +102,22 @@ test("supports structured search and serialized exact mutations", async () => {
   expect(invalid.status).toBe("error");
 });
 
+test("rejects overlapping duplicate exact edit matches without changing the note", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-overlapping-edit-"));
+  const path = join(root, "overlapping.md");
+  await writeFile(path, "aaa", "utf8");
+  const vault = await vaultAt(root);
+
+  const edited = await vault.edit("overlapping.md", [{ oldText: "aa", newText: "X" }]);
+
+  expect(edited.status).toBe("error");
+  if (edited.status === "error") {
+    expect(edited.error._tag).toBe("EditValidationError");
+    if (edited.error._tag === "EditValidationError") expect(edited.error.reason).toBe("duplicate");
+  }
+  expect(await readFile(path, "utf8")).toBe("aaa");
+});
+
 test("discovers, reads, searches, and edits Markdown and HTML notes", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-html-vault-"));
   await writeFile(join(root, "alpha.md"), "# Alpha\n\nMarkdown match", "utf8");
