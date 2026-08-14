@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
@@ -165,6 +165,33 @@ function htmlDocument(title: string, content: string): string {
 </html>`;
 }
 
+/** Removes an incomplete newly created note while preserving creation and cleanup failures. */
+async function removeIncompleteNote(
+  absolute: string,
+  relativePath: string,
+  title: string,
+  creationError: NoteWriteError
+): Promise<ResultType<void, NoteWriteError>> {
+  const removed = await Result.tryPromise({
+    try: () => unlink(absolute),
+    catch: (cause) => mapFileSystemError(absolute, cause),
+  });
+  if (Result.isOk(removed) || MissingFileError.is(removed.error)) return Result.ok();
+
+  return Result.err(
+    new NoteWriteError({
+      operation: "create",
+      path: relativePath,
+      title,
+      cause: new AggregateError(
+        [creationError, removed.error],
+        "Hubble note creation failed and the incomplete note could not be removed."
+      ),
+      message: "Could not remove an incomplete Hubble note after creation failed.",
+    })
+  );
+}
+
 /** Creates a uniquely named note in the requested format and optional folder. */
 export async function writeNewVaultFile(
   vault: VaultRoot,
@@ -263,8 +290,14 @@ export async function writeNewVaultFile(
         });
       }
 
-      if (Result.isError(written)) return written;
-      if (Result.isError(closed)) return closed;
+      if (Result.isError(written)) {
+        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, written.error);
+        return Result.isError(removed) ? removed : written;
+      }
+      if (Result.isError(closed)) {
+        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, closed.error);
+        return Result.isError(removed) ? removed : closed;
+      }
 
       return Result.ok({ absolute, relative: relativePath });
     }

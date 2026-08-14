@@ -6,6 +6,7 @@ const fsMocks = vi.hoisted(() => ({
   mkdtemp: vi.fn(),
   open: vi.fn(),
   readFile: vi.fn(),
+  unlink: vi.fn(),
   writeFile: vi.fn(),
 }));
 
@@ -35,6 +36,7 @@ beforeEach(() => {
   fsMocks.mkdtemp.mockImplementation(actualFs.mkdtemp);
   fsMocks.open.mockImplementation(actualFs.open);
   fsMocks.readFile.mockImplementation(actualFs.readFile);
+  fsMocks.unlink.mockImplementation(actualFs.unlink);
   fsMocks.writeFile.mockImplementation(actualFs.writeFile);
 });
 
@@ -52,19 +54,47 @@ test("classifies HTML create open failures through Vault.create", async () => {
   }
 });
 
-test("closes the create handle after a write failure", async () => {
+test("closes the create handle and removes the incomplete note after a write failure", async () => {
   const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-write-"));
   const vault = await vaultAt(root);
   const cause = systemError("disk full", "ENOSPC");
-  const close = vi.fn().mockResolvedValue(undefined);
   const writeFile = vi.fn().mockRejectedValue(cause);
-  fsMocks.open.mockResolvedValueOnce({ close, writeFile });
+  const close = vi.fn();
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: string) => {
+    const handle = await actualFs.open(path, flags);
+    close.mockImplementation(() => handle.close());
+    return { close, writeFile };
+  });
 
   const result = await vault.create("Write Failure", "body");
   expect(writeFile).toHaveBeenCalledOnce();
   expect(close).toHaveBeenCalledOnce();
+  await expect(actualFs.readFile(join(root, "write-failure.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   expect(result.status).toBe("error");
   if (result.status === "error" && result.error._tag === "NoteWriteError") expect(result.error.cause).toBe(cause);
+});
+
+test("preserves creation and cleanup failures when an incomplete note cannot be removed", async () => {
+  const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-cleanup-"));
+  const vault = await vaultAt(root);
+  const writeCause = systemError("disk full", "ENOSPC");
+  const cleanupCause = systemError("cleanup denied", "EACCES");
+  const close = vi.fn().mockResolvedValue(undefined);
+  fsMocks.open.mockResolvedValueOnce({ close, writeFile: vi.fn().mockRejectedValue(writeCause) });
+  fsMocks.unlink.mockRejectedValueOnce(cleanupCause);
+
+  const result = await vault.create("Cleanup Failure", "body");
+
+  expect(result.status).toBe("error");
+  if (result.status === "error") {
+    expect(result.error._tag).toBe("NoteWriteError");
+    if (result.error._tag === "NoteWriteError") {
+      expect(result.error.cause).toBeInstanceOf(AggregateError);
+      const causes = (result.error.cause as AggregateError).errors;
+      expect(causes[0]).toMatchObject({ _tag: "NoteWriteError", cause: writeCause });
+      expect(causes[1]).toBe(cleanupCause);
+    }
+  }
 });
 
 test("maps Vault read, append, and edit I/O failures", async () => {
