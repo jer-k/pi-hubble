@@ -59,6 +59,24 @@ test("keeps Vault operations inside the root and protects symlinks", async () =>
   if (htmlSymlinkEscape.status === "error") expect(htmlSymlinkEscape.error._tag).toBe("VaultPathError");
 });
 
+test("rejects a missing vault root replaced by a symlink before creation", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "pi-hubble-root-symlink-"));
+  const root = join(parent, "vault");
+  const outside = join(parent, "outside");
+  await mkdir(outside);
+  const vault = await vaultAt(root);
+
+  await symlink(outside, root, "dir");
+  const created = await vault.create("Escaped Note", "outside");
+
+  expect(created.status).toBe("error");
+  if (created.status === "error") {
+    expect(created.error._tag).toBe("VaultPathError");
+    if (created.error._tag === "VaultPathError") expect(created.error.reason).toBe("symlink-escape");
+  }
+  await expect(readFile(join(outside, "escaped-note.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("supports structured search and serialized exact mutations", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-vault-"));
   const vault = await vaultAt(root);

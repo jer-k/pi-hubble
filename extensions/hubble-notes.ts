@@ -191,7 +191,10 @@ export async function writeNewVaultFile(
 
     if (Result.isError(rootCreated)) return rootCreated;
 
-    const directory = await resolveVaultDirectory(vault, folder);
+    // Force the vault root through canonical resolution after mkdir. An empty
+    // folder normally uses the root fast path, which is useful while the root
+    // is missing but must not bypass revalidation before a note is opened.
+    const directory = await resolveVaultDirectory(vault, folder.trim() || ".");
     if (Result.isError(directory)) return directory;
 
     const directoryCreated = await Result.tryPromise({
