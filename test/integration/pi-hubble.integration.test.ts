@@ -164,6 +164,25 @@ function toolText(result: AgentToolResult<unknown>): string {
   return content.text;
 }
 
+test("loads the extension and HTML App skill from the Pi package manifest", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-package-integration-"));
+  const agentDir = join(workspace, "agent");
+  await mkdir(agentDir, { recursive: true });
+  const settingsManager = SettingsManager.inMemory({ packages: [repositoryRoot] });
+  settingsManager.setProjectTrusted(true);
+  const resourceLoader = new DefaultResourceLoader({ cwd: workspace, agentDir, settingsManager });
+
+  try {
+    await resourceLoader.reload();
+    expect(resourceLoader.getExtensions().errors).toEqual([]);
+    expect(resourceLoader.getSkills().diagnostics).toEqual([]);
+    const bundledSkill = resourceLoader.getSkills().skills.find((skill) => skill.name === "create-html-app");
+    expect(bundledSkill?.filePath).toBe(join(repositoryRoot, "skills", "create-html-app", "SKILL.md"));
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("loads the checkout through Pi and creates a note using --hubble-dir", async () => {
   const vault = await mkdtemp(join(tmpdir(), "pi-hubble-integration-"));
   try {
