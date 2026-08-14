@@ -11,7 +11,7 @@ import {
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
-import { Type } from "typebox";
+import { type Static, Type } from "typebox";
 import type { GetVault } from "./hubble-config.ts";
 import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
 import type { NoteSearchResult } from "./hubble-vault.ts";
@@ -48,16 +48,41 @@ const EditParameters = Type.Object({
   path: Type.String({ description: "Supported note path relative to the Hubble vault" }),
   edits: Type.Array(
     Type.Object({
-      oldText: Type.String({ description: "Exact existing text; it must occur once" }),
-      newText: Type.String({ description: "Replacement text" }),
-    })
+      oldText: Type.String({
+        description:
+          "Exact text for one targeted replacement. It must be unique in the original note and must not overlap with any other edits[].oldText in the same call.",
+      }),
+      newText: Type.String({ description: "Replacement text for this targeted edit." }),
+    }),
+    {
+      description:
+        "One or more targeted replacements. Each edit is matched against the original note, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
+    }
   ),
 });
 
-const AppendParameters = Type.Object({
-  path: Type.String({ description: "Markdown path relative to the Hubble vault" }),
-  content: Type.String({ description: "Markdown to append to the note" }),
-});
+type HubbleEditArguments = Static<typeof EditParameters>;
+
+/** Normalizes model-generated edit arguments before Typebox validates the public schema. */
+function prepareHubbleEditArguments(input: unknown): HubbleEditArguments {
+  if (!input || typeof input !== "object") return input as HubbleEditArguments;
+
+  const args = input as Record<string, unknown>;
+  if (typeof args.edits === "string") {
+    const parsed = Result.try({
+      try: () => JSON.parse(args.edits as string) as unknown,
+      catch: () => undefined,
+    });
+    if (Result.isOk(parsed) && Array.isArray(parsed.value)) args.edits = parsed.value;
+  }
+
+  if (typeof args.oldText !== "string" || typeof args.newText !== "string") return args as HubbleEditArguments;
+
+  const edits = Array.isArray(args.edits) ? [...args.edits] : [];
+  edits.push({ oldText: args.oldText, newText: args.newText });
+  const { oldText: _oldText, newText: _newText, ...rest } = args;
+  return { ...rest, edits } as HubbleEditArguments;
+}
 
 /** Returns a successful Result value or raises its Hubble failure for the tool API. */
 function unwrap<T, E extends HubbleFailure>(result: ResultType<T, E>): T {
@@ -118,7 +143,7 @@ function formatSearchResults(results: NoteSearchResult[], limit: number): { line
   return { lines, count: lines.length };
 }
 
-/** Registers the Hubble search, read, create, edit, and append tools. */
+/** Registers the Hubble search, read, create, and edit tools. */
 export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerTool({
     name: "hubble_search",
@@ -217,46 +242,28 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     name: "hubble_edit",
     label: "Hubble Edit",
     description:
-      "Apply one or more unique exact-text replacements to a Markdown or HTML note in the configured Hubble vault.",
-    promptSnippet: "Apply exact edits to a Hubble note in the configured vault",
+      "Edit one Markdown or HTML note using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original note. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+    promptSnippet: "Make precise Hubble note edits with exact text replacement, including multiple disjoint edits",
     promptGuidelines: [
-      "Use hubble_edit for targeted Hubble note changes; each oldText must match exactly once and edits must not overlap.",
+      "Use hubble_edit for precise Hubble note changes; edits[].oldText must match exactly.",
+      "When changing multiple separate locations in one Hubble note, use one hubble_edit call with multiple entries in edits[] instead of multiple calls.",
+      "Each hubble_edit edits[].oldText is matched against the original note, not after earlier edits are applied. Do not emit overlapping or nested edits; merge nearby changes into one edit.",
+      "Keep hubble_edit edits[].oldText as small as possible while still being unique in the note. Do not pad with large unchanged regions.",
     ],
     parameters: EditParameters,
-    /** Applies unique exact-text replacements to a vault note. */
+    prepareArguments: prepareHubbleEditArguments,
+    /** Applies unique exact-text replacements to a vault note through an atomic commit. */
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
       if (Result.isError(vault)) throwHubbleError(vault.error);
 
-      const edited = unwrap(await vault.value.edit(params.path, params.edits));
+      const edited = unwrap(await vault.value.edit(params.path, params.edits, signal));
       return noteResult(`Updated Hubble note: ${edited.relative}`, {
         path: edited.relative,
         editCount: params.edits.length,
       });
-    },
-  });
-
-  pi.registerTool({
-    name: "hubble_append",
-    label: "Hubble Append",
-    description:
-      "Append Markdown to an existing Markdown note in the configured Hubble vault, preserving the existing content. HTML append is not supported.",
-    promptSnippet: "Append Markdown to an existing Hubble Markdown note",
-    promptGuidelines: [
-      "Use hubble_append only for Markdown notes when adding content without replacing the existing note.",
-    ],
-    parameters: AppendParameters,
-    /** Appends Markdown to an existing vault note. */
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      throwIfAborted(signal);
-
-      const vault = await getVault(ctx);
-      if (Result.isError(vault)) throwHubbleError(vault.error);
-
-      const appended = unwrap(await vault.value.append(params.path, params.content));
-      return noteResult(`Appended to Hubble note: ${appended.relative}`, { path: appended.relative });
     },
   });
 }

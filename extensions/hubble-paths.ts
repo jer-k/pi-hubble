@@ -246,7 +246,8 @@ async function resolveContained(
       return Result.err(pathError(normalized, "not-directory", "The requested Hubble folder is not a directory."));
   }
 
-  return Result.ok({ absolute, relative: relative(vault.root, absolute).split(sep).join("/") });
+  const canonical = Result.isOk(resolvedTarget) ? resolvedTarget.value : absolute;
+  return Result.ok({ absolute: canonical, relative: relative(vault.root, canonical).split(sep).join("/") });
 }
 
 /** Resolves a user-supplied note path relative to the vault. */

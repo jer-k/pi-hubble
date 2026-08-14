@@ -54,10 +54,9 @@ The extension registers these Pi tools:
 - `hubble_create(title, content, folder?, format?)` creates a new note,
   optionally in a vault-relative folder. `format` is `markdown` (the default)
   or `html`.
-- `hubble_edit(path, edits)` applies exact, unique, non-overlapping text
-  replacements to Markdown or HTML.
-- `hubble_append(path, content)` appends Markdown to an existing Markdown note.
-  HTML append is intentionally unsupported to avoid producing malformed HTML.
+- `hubble_edit(path, edits)` applies one or more exact, unique,
+  non-overlapping text replacements to Markdown or HTML. Every edit is matched
+  against the original note rather than the result of an earlier replacement.
 
 All document paths are relative to the configured vault and must use `.md` or
 `.html` (case-insensitively). Search operates line-by-line on note source, so
@@ -71,9 +70,12 @@ creation escapes the title and wraps `content` as a body fragment in a valid
 standalone document. Collisions are format-specific, producing names such as
 `my-note-2.md` or `my-note-2.html`.
 
-Writes are serialized with Pi's file mutation queue. Paths are checked against
-path traversal and symlink escapes, and note discovery recursively scans the
-vault while skipping symlinks.
+Writes are serialized with Pi's file mutation queue. Existing notes are edited
+by writing and syncing a same-directory temporary file, closing it, and
+atomically renaming it over the original so a failed edit cannot truncate the
+note. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
+are checked against path traversal and symlink escapes, and note discovery
+recursively scans the vault while skipping symlinks.
 
 ## Interactive discovery
 

@@ -11,12 +11,12 @@ type ToolResult = { content: Array<{ text: string }>; details: unknown };
 
 type ToolExecutor = (...args: unknown[]) => Promise<ToolResult>;
 
-type RegisteredTestTool = { execute: ToolExecutor };
+type RegisteredTestTool = { execute: ToolExecutor; prepareArguments?: (input: unknown) => unknown };
 
 function register(getVault: GetVault) {
   const tools: Record<string, RegisteredTestTool> = {};
   const pi = {
-    registerTool(tool: { name: string; execute: ToolExecutor }) {
+    registerTool(tool: { name: string; execute: ToolExecutor; prepareArguments?: (input: unknown) => unknown }) {
       tools[tool.name] = tool;
     },
   };
@@ -26,10 +26,10 @@ function register(getVault: GetVault) {
 
 const context = { cwd: process.cwd(), isProjectTrusted: () => true };
 
-test("executes create, read, edit, append, and search tools", async () => {
+test("executes create, read, edit, and search tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-"));
   const tools = register(async () => openVault(root));
-  expect(Object.keys(tools)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit", "hubble_append"]);
+  expect(Object.keys(tools)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
 
   const created = await tools.hubble_create.execute(
     "create",
@@ -54,21 +54,18 @@ test("executes create, read, edit, append, and search tools", async () => {
 
   const edited = await tools.hubble_edit.execute(
     "edit",
-    { path: "first-note.md", edits: [{ oldText: "Alpha", newText: "Updated" }] },
+    {
+      path: "first-note.md",
+      edits: [
+        { oldText: "Alpha", newText: "Updated" },
+        { oldText: "Beta", newText: "Beta\nFinal" },
+      ],
+    },
     undefined,
     undefined,
     context
   );
-  expect(edited.details).toEqual({ path: "first-note.md", editCount: 1 });
-
-  const appended = await tools.hubble_append.execute(
-    "append",
-    { path: "first-note.md", content: "Final" },
-    undefined,
-    undefined,
-    context
-  );
-  expect(appended.details).toEqual({ path: "first-note.md" });
+  expect(edited.details).toEqual({ path: "first-note.md", editCount: 2 });
   expect(await readFile(path, "utf8")).toContain("Updated\nBeta\nFinal");
 
   const search = await tools.hubble_search.execute(
@@ -80,6 +77,22 @@ test("executes create, read, edit, append, and search tools", async () => {
   );
   expect(search.content[0].text).toContain("first-note.md:3: Updated");
   expect(search.details).toMatchObject({ query: "updated", matchCount: 1, truncated: false });
+});
+
+test("normalizes stringified and legacy edit arguments like Pi's built-in edit tool", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-arguments-"));
+  const tools = register(async () => openVault(root));
+  const prepare = tools.hubble_edit.prepareArguments;
+  if (!prepare) throw new Error("hubble_edit did not register prepareArguments");
+
+  expect(prepare({ path: "note.md", edits: '[{"oldText":"Alpha","newText":"Beta"}]' })).toEqual({
+    path: "note.md",
+    edits: [{ oldText: "Alpha", newText: "Beta" }],
+  });
+  expect(prepare({ path: "note.md", oldText: "Alpha", newText: "Beta" })).toEqual({
+    path: "note.md",
+    edits: [{ oldText: "Alpha", newText: "Beta" }],
+  });
 });
 
 test("creates, reads, edits, and searches HTML through tools", async () => {
@@ -121,15 +134,6 @@ test("creates, reads, edits, and searches HTML through tools", async () => {
     context
   );
   expect(search.content[0].text).toContain("web/html-and-tools.html:9: <p>Updated</p>");
-  await expect(
-    tools.hubble_append.execute(
-      "append-html",
-      { path: "web/html-and-tools.html", content: "<footer>Later</footer>" },
-      undefined,
-      undefined,
-      context
-    )
-  ).rejects.toThrow("only supported for Markdown");
 });
 
 test("reports validation failures and honors cancellation", async () => {

@@ -1,10 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { access, mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
 import {
-  type AppendNoteError,
   type CreateNoteResult,
   type DiscoveryError,
   type EditNoteError,
@@ -313,56 +313,190 @@ export async function writeNewVaultFile(
   });
 }
 
-/** Appends Markdown to an existing vault file without replacing its contents. */
-export async function appendToVaultFile(path: HubblePath, content: string): Promise<ResultType<void, AppendNoteError>> {
-  if (!content)
-    return Result.err(
-      new NoteValidationError({ reason: "append", path: path.relative, message: "content must not be empty." })
-    );
-  return withFileMutationQueue(path.absolute, async () => {
-    const current = await Result.tryPromise({
-      try: () => readFile(path.absolute, "utf8"),
-      catch: (cause) => noteReadError(path, cause),
-    });
+/** Raises cancellation only between filesystem operations so the mutation queue remains held while I/O settles. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble edit was cancelled.", "AbortError");
+}
 
-    if (Result.isError(current)) return current;
+/** Normalizes model-supplied and note line endings before exact edit matching. */
+function normalizeToLf(text: string): string {
+  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
 
-    const separator = current.value.length > 0 && !current.value.endsWith("\n") ? "\n" : "";
-    return Result.tryPromise({
-      try: () => writeFile(path.absolute, current.value + separator + content, "utf8"),
-      catch: (cause) =>
-        new NoteWriteError({
-          operation: "append",
-          path: path.relative,
-          cause: mapFileSystemError(path.absolute, cause),
-          message: "Could not append to the Hubble note.",
-        }),
-    });
+/** Detects the line-ending style that an edited note should retain. */
+function detectLineEnding(text: string): "\n" | "\r\n" {
+  const firstLf = text.indexOf("\n");
+  return firstLf > 0 && text[firstLf - 1] === "\r" ? "\r\n" : "\n";
+}
+
+/** Restores the original note's line-ending style after LF-normalized editing. */
+function restoreLineEndings(text: string, ending: "\n" | "\r\n"): string {
+  return ending === "\r\n" ? text.replace(/\n/g, "\r\n") : text;
+}
+
+/** Creates the public structured failure for one atomic edit filesystem step. */
+function editWriteError(path: HubblePath, filesystemPath: string, cause: unknown, message: string): NoteWriteError {
+  return new NoteWriteError({
+    operation: "edit",
+    path: path.relative,
+    cause: mapFileSystemError(filesystemPath, cause),
+    message,
   });
 }
 
-/** Applies validated exact edits to an existing vault file. */
-export async function editVaultFile(path: HubblePath, edits: HubbleEdit[]): Promise<ResultType<void, EditNoteError>> {
+/** Removes an uncommitted edit temporary file and preserves cleanup failures alongside the original failure. */
+async function cleanUpFailedEdit(
+  path: HubblePath,
+  temporaryPath: string,
+  failure: NoteWriteError
+): Promise<NoteWriteError> {
+  const removed = await Result.tryPromise({
+    try: () => unlink(temporaryPath),
+    catch: (cause) => mapFileSystemError(temporaryPath, cause),
+  });
+  if (Result.isOk(removed) || MissingFileError.is(removed.error)) return failure;
+
+  return new NoteWriteError({
+    operation: "edit",
+    path: path.relative,
+    cause: new AggregateError([failure, removed.error], "The Hubble edit and temporary-file cleanup both failed."),
+    message: "Could not clean up a failed Hubble note edit.",
+  });
+}
+
+/** Removes an uncommitted temporary file before propagating cancellation. */
+async function cancelAtomicEdit(path: HubblePath, temporaryPath: string, signal: AbortSignal): Promise<never> {
+  const reason = signal.reason ?? new DOMException("The Hubble edit was cancelled.", "AbortError");
+  const removed = await Result.tryPromise({
+    try: () => unlink(temporaryPath),
+    catch: (cause) => mapFileSystemError(temporaryPath, cause),
+  });
+  if (Result.isError(removed) && !MissingFileError.is(removed.error)) {
+    throw new AggregateError([reason, removed.error], `The edit of ${path.relative} was cancelled but cleanup failed.`);
+  }
+  throw reason;
+}
+
+/**
+ * Writes complete replacement content to a sibling temporary file, syncs and closes it,
+ * then atomically renames it over the note. The caller must hold Pi's mutation queue.
+ */
+async function replaceVaultFileAtomically(
+  path: HubblePath,
+  content: string,
+  signal?: AbortSignal
+): Promise<ResultType<void, NoteWriteError>> {
+  throwIfAborted(signal);
+
+  const metadata = await Result.tryPromise({
+    try: () => stat(path.absolute),
+    catch: (cause) => editWriteError(path, path.absolute, cause, "Could not inspect the Hubble note before editing."),
+  });
+  if (Result.isError(metadata)) return metadata;
+
+  const temporaryPath = join(
+    dirname(path.absolute),
+    `.${basename(path.absolute)}.pi-hubble-${process.pid}-${randomUUID()}.tmp`
+  );
+  const opened = await Result.tryPromise({
+    try: () => open(temporaryPath, "wx", 0o600),
+    catch: (cause) => editWriteError(path, temporaryPath, cause, "Could not create a temporary Hubble edit file."),
+  });
+  if (Result.isError(opened)) return opened;
+
+  const handle = opened.value;
+  let failure: NoteWriteError | undefined;
+
+  const written = await Result.tryPromise({
+    try: () => handle.writeFile(content, "utf8"),
+    catch: (cause) => editWriteError(path, temporaryPath, cause, "Could not write the temporary Hubble edit file."),
+  });
+  if (Result.isError(written)) failure = written.error;
+
+  if (!failure) {
+    const permissions = await Result.tryPromise({
+      try: () => handle.chmod(metadata.value.mode),
+      catch: (cause) =>
+        editWriteError(path, temporaryPath, cause, "Could not preserve the Hubble note permissions while editing."),
+    });
+    if (Result.isError(permissions)) failure = permissions.error;
+  }
+
+  if (!failure) {
+    const synced = await Result.tryPromise({
+      try: () => handle.sync(),
+      catch: (cause) => editWriteError(path, temporaryPath, cause, "Could not sync the temporary Hubble edit file."),
+    });
+    if (Result.isError(synced)) failure = synced.error;
+  }
+
+  const closed = await Result.tryPromise({
+    try: () => handle.close(),
+    catch: (cause) => editWriteError(path, temporaryPath, cause, "Could not close the temporary Hubble edit file."),
+  });
+  if (Result.isError(closed)) {
+    failure = failure
+      ? new NoteWriteError({
+          operation: "edit",
+          path: path.relative,
+          cause: new AggregateError([failure, closed.error], "Writing and closing the Hubble edit both failed."),
+          message: "Could not finish the temporary Hubble edit file.",
+        })
+      : closed.error;
+  }
+
+  if (failure) return Result.err(await cleanUpFailedEdit(path, temporaryPath, failure));
+  if (signal?.aborted) return cancelAtomicEdit(path, temporaryPath, signal);
+
+  const committed = await Result.tryPromise({
+    try: () => rename(temporaryPath, path.absolute),
+    catch: (cause) => editWriteError(path, path.absolute, cause, "Could not commit the Hubble note edit."),
+  });
+  if (Result.isError(committed)) {
+    return Result.err(await cleanUpFailedEdit(path, temporaryPath, committed.error));
+  }
+
+  return Result.ok();
+}
+
+/**
+ * Applies validated exact edits to an existing vault file using an atomic replacement.
+ * Returns read, edit-validation, or write failures; cancellation is propagated.
+ */
+export async function editVaultFile(
+  path: HubblePath,
+  edits: HubbleEdit[],
+  signal?: AbortSignal
+): Promise<ResultType<void, EditNoteError>> {
   return withFileMutationQueue(path.absolute, async () => {
+    throwIfAborted(signal);
     const current = await Result.tryPromise({
       try: () => readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
     });
     if (Result.isError(current)) return current;
+    throwIfAborted(signal);
 
-    const next = applyExactEditsResult(current.value, edits, path.relative);
-    if (Result.isError(next)) return next;
-
-    return Result.tryPromise({
-      try: () => writeFile(path.absolute, next.value, "utf8"),
-      catch: (cause) =>
-        new NoteWriteError({
-          operation: "edit",
-          path: path.relative,
-          cause: mapFileSystemError(path.absolute, cause),
-          message: "Could not edit the Hubble note.",
-        }),
+    const writable = await Result.tryPromise({
+      try: () => access(path.absolute, constants.W_OK),
+      catch: (cause) => editWriteError(path, path.absolute, cause, "The Hubble note is not writable."),
     });
+    if (Result.isError(writable)) return writable;
+    throwIfAborted(signal);
+
+    const bom = current.value.startsWith("\uFEFF") ? "\uFEFF" : "";
+    const content = bom ? current.value.slice(1) : current.value;
+    const lineEnding = detectLineEnding(content);
+    const normalizedContent = normalizeToLf(content);
+    const normalizedEdits = edits.map((edit) => ({
+      oldText: normalizeToLf(edit.oldText),
+      newText: normalizeToLf(edit.newText),
+    }));
+    const next = applyExactEditsResult(normalizedContent, normalizedEdits, path.relative);
+    if (Result.isError(next)) return next;
+    throwIfAborted(signal);
+
+    return replaceVaultFileAtomically(path, bom + restoreLineEndings(next.value, lineEnding), signal);
   });
 }
 

@@ -39,7 +39,6 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
     "hubble_read",
     "hubble_create",
     "hubble_edit",
-    "hubble_append",
   ]);
   expect(getFlagCalls).toBe(0);
 

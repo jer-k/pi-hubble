@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Result } from "better-result";
@@ -20,7 +20,6 @@ test("handles missing roots and returns structured note failures", async () => {
   for (const result of [
     await vault.read("missing.md"),
     await vault.edit("missing.md", [{ oldText: "old", newText: "new" }]),
-    await vault.append("missing.md", "content"),
   ]) {
     expect(result.status).toBe("error");
     if (result.status === "error") expect(result.error._tag).toBe("NoteNotFoundError");
@@ -59,6 +58,22 @@ test("keeps Vault operations inside the root and protects symlinks", async () =>
   if (htmlSymlinkEscape.status === "error") expect(htmlSymlinkEscape.error._tag).toBe("VaultPathError");
 });
 
+test("atomically edits the canonical target of a symlink that stays inside the vault", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-internal-symlink-"));
+  const target = join(root, "target.md");
+  const alias = join(root, "alias.md");
+  await writeFile(target, "old", "utf8");
+  await symlink(target, alias);
+  const vault = await vaultAt(root);
+
+  const edited = await vault.edit("alias.md", [{ oldText: "old", newText: "new" }]);
+
+  expect(edited.status).toBe("ok");
+  if (edited.status === "ok") expect(edited.value.relative).toBe("target.md");
+  expect(await readFile(target, "utf8")).toBe("new");
+  expect((await lstat(alias)).isSymbolicLink()).toBe(true);
+});
+
 test("rejects a missing vault root replaced by a symlink before creation", async () => {
   const parent = await mkdtemp(join(tmpdir(), "pi-hubble-root-symlink-"));
   const root = join(parent, "vault");
@@ -92,14 +107,32 @@ test("supports structured search and serialized exact mutations", async () => {
   });
   const read = await vault.read(first.value.relative);
   expect(read.status).toBe("ok");
-  const edited = await vault.edit(first.value.relative, [{ oldText: "first", newText: "updated" }]);
-  const appended = await vault.append(first.value.relative, "appended");
-  expect(edited.status).toBe("ok");
-  expect(appended.status).toBe("ok");
-  expect(await readFile(first.value.absolute, "utf8")).toBe("# Same Title\n\nupdated\nIncident response\nappended");
+  const [firstEdit, secondEdit] = await Promise.all([
+    vault.edit(first.value.relative, [{ oldText: "first", newText: "updated" }]),
+    vault.edit(first.value.relative, [{ oldText: "Incident response", newText: "Resolved incident" }]),
+  ]);
+  expect(firstEdit.status).toBe("ok");
+  expect(secondEdit.status).toBe("ok");
+  expect(await readFile(first.value.absolute, "utf8")).toBe("# Same Title\n\nupdated\nResolved incident");
 
   const invalid = await vault.edit(first.value.relative, [{ oldText: "same", newText: "same" }]);
   expect(invalid.status).toBe("error");
+});
+
+test("preserves a note's BOM, CRLF line endings, and permissions while editing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-edit-format-"));
+  const path = join(root, "formatted.md");
+  await writeFile(path, "\uFEFF# Formatted\r\n\r\nAlpha\r\nBeta\r\n", "utf8");
+  await chmod(path, 0o640);
+  const vault = await vaultAt(root);
+
+  const edited = await vault.edit("formatted.md", [
+    { oldText: "Alpha\nBeta", newText: "Updated\nContent" },
+  ]);
+
+  expect(edited.status).toBe("ok");
+  expect(await readFile(path, "utf8")).toBe("\uFEFF# Formatted\r\n\r\nUpdated\r\nContent\r\n");
+  expect((await stat(path)).mode & 0o777).toBe(0o640);
 });
 
 test("rejects overlapping duplicate exact edit matches without changing the note", async () => {
@@ -144,13 +177,6 @@ test("discovers, reads, searches, and edits Markdown and HTML notes", async () =
   const edited = await vault.edit("page.HTML", [{ oldText: "HTML match", newText: "updated source" }]);
   expect(edited.status).toBe("ok");
   expect(await readFile(join(root, "page.HTML"), "utf8")).toBe("<main>updated source</main>");
-
-  const append = await vault.append("page.HTML", "<footer>later</footer>");
-  expect(append.status).toBe("error");
-  if (append.status === "error") {
-    expect(append.error._tag).toBe("NoteValidationError");
-    if (append.error._tag === "NoteValidationError") expect(append.error.reason).toBe("append");
-  }
 
   const unsupported = await vault.read("ignored.txt");
   expect(unsupported.status).toBe("error");

@@ -205,7 +205,6 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       "hubble_read",
       "hubble_create",
       "hubble_edit",
-      "hubble_append",
     ]);
 
     const created = await getTool(session, "hubble_create").execute(
@@ -217,21 +216,13 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
     expect(toolText(created)).toBe("Created Hubble note: checks/integration-tool-note.md");
     expect(created.details).toEqual({ path: "checks/integration-tool-note.md" });
 
-    const appended = await getTool(session, "hubble_append").execute(
-      "append",
-      { path: "checks/integration-tool-note.md", content: "Gamma" },
-      undefined,
-      undefined
-    );
-    expect(toolText(appended)).toBe("Appended to Hubble note: checks/integration-tool-note.md");
-
     const edited = await getTool(session, "hubble_edit").execute(
       "edit",
       {
         path: "checks/integration-tool-note.md",
         edits: [
           { oldText: "Alpha", newText: "Updated Alpha" },
-          { oldText: "Beta", newText: "Updated Beta" },
+          { oldText: "Beta", newText: "Updated Beta\nGamma" },
         ],
       },
       undefined,

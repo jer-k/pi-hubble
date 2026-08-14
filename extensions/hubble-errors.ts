@@ -49,7 +49,7 @@ export class VaultPathError extends TaggedError("VaultPathError")<{
   message: string;
 }> {}
 
-export type NoteValidationReason = "title" | "append" | "query";
+export type NoteValidationReason = "title" | "query";
 export class NoteValidationError extends TaggedError("NoteValidationError")<{
   reason: NoteValidationReason;
   path?: string;
@@ -58,7 +58,7 @@ export class NoteValidationError extends TaggedError("NoteValidationError")<{
 }> {}
 
 export class NoteWriteError extends TaggedError("NoteWriteError")<{
-  operation: "create" | "append" | "edit";
+  operation: "create" | "edit";
   path: string;
   title?: string;
   cause: unknown;
@@ -98,7 +98,6 @@ export type CreateNoteResult = ResultType<HubblePath, CreateNoteError>;
 export type VaultOpenErrorType = VaultOpenError;
 export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
 export type NoteReadResult = ResultType<string, NoteNotFoundError | NoteReadError>;
-export type AppendNoteError = NoteValidationError | NoteNotFoundError | NoteReadError | NoteWriteError;
 export type EditNoteError = EditValidationError | NoteNotFoundError | NoteReadError | NoteWriteError;
 export type DiscoveryError = VaultDiscoveryError;
 export type VaultNoteError = VaultPathError | NoteNotFoundError | NoteReadError;

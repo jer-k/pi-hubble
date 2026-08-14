@@ -6,6 +6,7 @@ const fsMocks = vi.hoisted(() => ({
   mkdtemp: vi.fn(),
   open: vi.fn(),
   readFile: vi.fn(),
+  rename: vi.fn(),
   unlink: vi.fn(),
   writeFile: vi.fn(),
 }));
@@ -36,6 +37,7 @@ beforeEach(() => {
   fsMocks.mkdtemp.mockImplementation(actualFs.mkdtemp);
   fsMocks.open.mockImplementation(actualFs.open);
   fsMocks.readFile.mockImplementation(actualFs.readFile);
+  fsMocks.rename.mockImplementation(actualFs.rename);
   fsMocks.unlink.mockImplementation(actualFs.unlink);
   fsMocks.writeFile.mockImplementation(actualFs.writeFile);
 });
@@ -97,7 +99,7 @@ test("preserves creation and cleanup failures when an incomplete note cannot be 
   }
 });
 
-test("maps Vault read, append, and edit I/O failures", async () => {
+test("maps Vault read and atomic edit I/O failures without changing the note", async () => {
   const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-note-"));
   const vault = await vaultAt(root);
   const created = await vault.create("Note", "old");
@@ -110,17 +112,94 @@ test("maps Vault read, append, and edit I/O failures", async () => {
   if (read.status === "error" && read.error._tag === "NoteReadError") expect(read.error.cause).toBe(readCause);
 
   fsMocks.readFile.mockImplementation(actualFs.readFile);
-  const appendCause = systemError("append failed", "EIO");
-  fsMocks.writeFile.mockRejectedValueOnce(appendCause);
-  const append = await vault.append(created.value.relative, "new");
-  expect(append.status).toBe("error");
-  if (append.status === "error" && append.error._tag === "NoteWriteError") expect(append.error.cause).toBe(appendCause);
+  const editCause = systemError("disk full", "ENOSPC");
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+    const handle = await actualFs.open(path, flags, mode);
+    return {
+      chmod: handle.chmod.bind(handle),
+      close: handle.close.bind(handle),
+      sync: handle.sync.bind(handle),
+      writeFile: vi.fn().mockRejectedValue(editCause),
+    };
+  });
 
-  const editCause = systemError("edit failed", "EIO");
-  fsMocks.writeFile.mockRejectedValueOnce(editCause);
   const edit = await vault.edit(created.value.relative, [{ oldText: "old", newText: "new" }]);
   expect(edit.status).toBe("error");
   if (edit.status === "error" && edit.error._tag === "NoteWriteError") expect(edit.error.cause).toBe(editCause);
+  expect(await actualFs.readFile(created.value.absolute, "utf8")).toBe("# Note\n\nold");
+  expect(await actualFs.readdir(root)).toEqual(["note.md"]);
+});
+
+test("preserves atomic edit and temporary-file cleanup failures", async () => {
+  const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-edit-cleanup-"));
+  const vault = await vaultAt(root);
+  const created = await vault.create("Edit Cleanup", "old");
+  if (created.status === "error") throw created.error;
+  const writeCause = systemError("disk full", "ENOSPC");
+  const cleanupCause = systemError("cleanup denied", "EACCES");
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+    const handle = await actualFs.open(path, flags, mode);
+    return {
+      chmod: handle.chmod.bind(handle),
+      close: handle.close.bind(handle),
+      sync: handle.sync.bind(handle),
+      writeFile: vi.fn().mockRejectedValue(writeCause),
+    };
+  });
+  fsMocks.unlink.mockRejectedValueOnce(cleanupCause);
+
+  const edit = await vault.edit(created.value.relative, [{ oldText: "old", newText: "new" }]);
+
+  expect(edit.status).toBe("error");
+  if (edit.status === "error" && edit.error._tag === "NoteWriteError") {
+    expect(edit.error.cause).toBeInstanceOf(AggregateError);
+    const causes = (edit.error.cause as AggregateError).errors;
+    expect(causes[0]).toMatchObject({ _tag: "NoteWriteError", cause: writeCause });
+    expect(causes[1]).toBe(cleanupCause);
+  }
+  expect(await actualFs.readFile(created.value.absolute, "utf8")).toBe("# Edit Cleanup\n\nold");
+});
+
+test("keeps the original note when the atomic edit rename fails", async () => {
+  const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-rename-"));
+  const vault = await vaultAt(root);
+  const created = await vault.create("Rename Note", "old");
+  if (created.status === "error") throw created.error;
+  const cause = systemError("rename failed", "EIO");
+  fsMocks.rename.mockRejectedValueOnce(cause);
+
+  const edit = await vault.edit(created.value.relative, [{ oldText: "old", newText: "new" }]);
+
+  expect(edit.status).toBe("error");
+  if (edit.status === "error" && edit.error._tag === "NoteWriteError") expect(edit.error.cause).toBe(cause);
+  expect(await actualFs.readFile(created.value.absolute, "utf8")).toBe("# Rename Note\n\nold");
+  expect(await actualFs.readdir(root)).toEqual(["rename-note.md"]);
+});
+
+test("cancels an atomic edit before rename and removes its temporary file", async () => {
+  const root = await actualFs.mkdtemp(join(tmpdir(), "pi-hubble-io-cancel-"));
+  const vault = await vaultAt(root);
+  const created = await vault.create("Cancel Note", "old");
+  if (created.status === "error") throw created.error;
+  const controller = new AbortController();
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+    const handle = await actualFs.open(path, flags, mode);
+    return {
+      chmod: handle.chmod.bind(handle),
+      close: handle.close.bind(handle),
+      writeFile: handle.writeFile.bind(handle),
+      sync: async () => {
+        await handle.sync();
+        controller.abort(new Error("cancelled"));
+      },
+    };
+  });
+
+  await expect(
+    vault.edit(created.value.relative, [{ oldText: "old", newText: "new" }], controller.signal)
+  ).rejects.toThrow("cancelled");
+  expect(await actualFs.readFile(created.value.absolute, "utf8")).toBe("# Cancel Note\n\nold");
+  expect(await actualFs.readdir(root)).toEqual(["cancel-note.md"]);
 });
 
 test("fails safely when truncated output cannot be persisted", async () => {
