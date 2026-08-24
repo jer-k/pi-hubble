@@ -13,8 +13,8 @@
     "typecheck": "tsc --noEmit",
     "format": "biome format --write .",
     "check": "biome check --write .",
-    "sync:skills": "node ./scripts/sync-hubble-skills.mjs",
-    "check:skills": "node ./scripts/sync-hubble-skills.mjs --check"
+    "sync:skills": "node ./scripts/sync-hubble-skills.ts",
+    "check:skills": "node ./scripts/sync-hubble-skills.ts --check"
   },
   "pi": {
     "extensions": [

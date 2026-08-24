@@ -4,8 +4,8 @@ import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,7 +13,7 @@ const upstreamRepository = "https://github.com/bholmesdev/hubble-skills.git";
 const selectedSkills = ["create-html-app"];
 
 /** Parses supported command-line options for the upstream sync. */
-function parseArguments(args) {
+function parseArguments(args: string[]): { check: boolean; ref: string } {
   let check = false;
   let ref = "main";
 
@@ -37,7 +37,7 @@ function parseArguments(args) {
 }
 
 /** Runs git without invoking a shell and returns trimmed standard output. */
-async function runGit(args, cwd = repositoryRoot) {
+async function runGit(args: string[], cwd: string = repositoryRoot): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     encoding: "utf8",
@@ -47,7 +47,7 @@ async function runGit(args, cwd = repositoryRoot) {
 }
 
 /** Recursively collects file paths beneath a directory in stable order. */
-async function collectFiles(directory, baseDirectory = directory) {
+async function collectFiles(directory: string, baseDirectory: string = directory): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
 
@@ -66,10 +66,13 @@ async function collectFiles(directory, baseDirectory = directory) {
 }
 
 /** Reads a directory into a relative-path-to-content snapshot for exact comparison. */
-async function snapshotDirectory(directory) {
+async function snapshotDirectory(directory: string): Promise<Map<string, Buffer>> {
   try {
     const files = await collectFiles(directory);
-    return new Map(await Promise.all(files.map(async (path) => [path, await readFile(join(directory, path))])));
+    const entries = await Promise.all(
+      files.map(async (path): Promise<[string, Buffer]> => [path, await readFile(join(directory, path))])
+    );
+    return new Map(entries);
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return new Map();
     throw error;
@@ -77,7 +80,7 @@ async function snapshotDirectory(directory) {
 }
 
 /** Checks whether two directory snapshots contain the same paths and bytes. */
-function snapshotsEqual(left, right) {
+function snapshotsEqual(left: ReadonlyMap<string, Buffer>, right: ReadonlyMap<string, Buffer>): boolean {
   if (left.size !== right.size) return false;
   for (const [path, content] of left) {
     const rightContent = right.get(path);
@@ -87,7 +90,7 @@ function snapshotsEqual(left, right) {
 }
 
 /** Copies the selected upstream skills and records the exact source commit. */
-async function stageSkills(sourceDirectory, stagedDirectory, ref) {
+async function stageSkills(sourceDirectory: string, stagedDirectory: string, ref: string): Promise<string> {
   const skillsDirectory = join(stagedDirectory, "skills");
   await mkdir(skillsDirectory, { recursive: true });
 
@@ -116,7 +119,7 @@ async function stageSkills(sourceDirectory, stagedDirectory, ref) {
 }
 
 /** Fetches upstream into a temporary checkout, then checks or updates vendored skills. */
-async function main() {
+async function main(): Promise<void> {
   const { check, ref } = parseArguments(process.argv.slice(2));
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "pi-hubble-skills-"));
   const sourceDirectory = join(temporaryDirectory, "upstream");
@@ -151,7 +154,7 @@ async function main() {
   }
 }
 
-await main().catch((error) => {
+await main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
