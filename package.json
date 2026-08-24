@@ -7,7 +7,7 @@
     "pi-package"
   ],
   "engines": {
-    "node": "^26.0.0"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "test": "vitest run --exclude=test/integration/**",
