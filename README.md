@@ -24,6 +24,13 @@ pi -e ./extensions/hubble.ts
 
 Loading the extension file directly does not load the bundled skill. Use `pi -e /path/to/pi-hubble` when testing the complete package.
 
+Development targets Node.js 26 and pins the current release in `.tool-versions`. With asdf, install it and restore dependencies with:
+
+```bash
+asdf install
+npm ci
+```
+
 ## Bundled skill
 
 The package includes Hubble's upstream `create-html-app` skill. It teaches Pi to build folder-local HTML Apps with Hubble's injected Alpine, Tailwind, theme-token, and Files API runtime.
