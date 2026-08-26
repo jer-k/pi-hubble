@@ -7,13 +7,17 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
+  highlightCode,
+  keyHint,
   truncateHead,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Result, type Result as ResultType } from "better-result";
 import { type Static, Type } from "typebox";
 import type { GetVault } from "./hubble-config.ts";
 import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
+import { buildNewNoteDocument } from "./hubble-notes.ts";
 import type { NoteSearchResult } from "./hubble-vault.ts";
 
 export interface TruncatedOutput {
@@ -36,12 +40,24 @@ const ReadParameters = Type.Object({
 });
 
 const CreateParameters = Type.Object({
-  title: Type.String({ description: "Note title; used for the heading and filename slug" }),
+  title: Type.String({
+    description: "Note title; used for the heading and, when filename is omitted, the filename slug",
+  }),
   content: Type.String({
     description: "Note body without the title heading; Markdown text or an HTML body fragment according to format",
   }),
+  filename: Type.Optional(
+    Type.String({
+      description:
+        "Optional exact filename, including .md or .html, without a folder path. Its extension determines the format when format is omitted. Creation fails if it already exists.",
+    })
+  ),
   folder: Type.Optional(Type.String({ description: "Optional vault-relative folder for the new note" })),
-  format: Type.Optional(StringEnum(["markdown", "html"] as const, { description: "Note format (default: markdown)" })),
+  format: Type.Optional(
+    StringEnum(["markdown", "html"] as const, {
+      description: "Note format; inferred from filename when provided, otherwise defaults to markdown",
+    })
+  ),
 });
 
 const EditParameters = Type.Object({
@@ -61,7 +77,10 @@ const EditParameters = Type.Object({
   ),
 });
 
+type HubbleCreateArguments = Static<typeof CreateParameters>;
 type HubbleEditArguments = Static<typeof EditParameters>;
+
+const CREATE_PREVIEW_LINES = 10;
 
 /** Normalizes model-generated edit arguments before Typebox validates the public schema. */
 function prepareHubbleEditArguments(input: unknown): HubbleEditArguments {
@@ -220,10 +239,11 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     name: "hubble_create",
     label: "Hubble Create",
     description:
-      "Create a new Markdown or HTML note in the configured Hubble vault without overwriting an existing note. Markdown is the default; HTML content is wrapped as a body fragment in a standalone document.",
+      "Create a new Markdown or HTML note in the configured Hubble vault without overwriting an existing note. An optional filename creates that exact basename; otherwise a filename slug is generated from the title. Markdown is the default, and HTML content is wrapped as a body fragment in a standalone document.",
     promptSnippet: "Create a new Markdown or HTML note in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
+      "When the user specifies an exact filename for a new Hubble note, pass it to hubble_create as filename instead of creating and editing multiple notes.",
     ],
     parameters: CreateParameters,
     /** Creates a new note in the requested format in the configured vault. */
@@ -233,8 +253,61 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       const vault = await getVault(ctx);
       if (Result.isError(vault)) throwHubbleError(vault.error);
 
-      const created = unwrap(await vault.value.create(params.title, params.content, params.folder, params.format));
+      const created = unwrap(
+        await vault.value.create(params.title, params.content, params.folder, params.format, params.filename)
+      );
       return noteResult(`Created Hubble note: ${created.relative}`, { path: created.relative });
+    },
+    /** Renders the generated document with syntax highlighting and expandable content. */
+    renderCall(args, theme, context) {
+      const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const partialArgs = args as Partial<HubbleCreateArguments>;
+      const title = typeof partialArgs.title === "string" ? partialArgs.title : "";
+      const content = typeof partialArgs.content === "string" ? partialArgs.content : undefined;
+      const filename = typeof partialArgs.filename === "string" ? partialArgs.filename : "";
+      const inferredFormat = filename.toLowerCase().endsWith(".html") ? "html" : "markdown";
+      const format = partialArgs.format === "html" ? "html" : inferredFormat;
+      const folder = typeof partialArgs.folder === "string" ? partialArgs.folder.trim() : "";
+      const destination = filename ? `${folder ? `${folder}/` : ""}${filename}` : folder ? `${folder}/` : "vault root";
+      const titleDisplay = title ? JSON.stringify(title) : "...";
+      let output = `${theme.fg("toolTitle", theme.bold("hubble_create"))} ${theme.fg("accent", titleDisplay)}`;
+      output += theme.fg("dim", ` → ${destination} (${format})`);
+
+      if (title && content !== undefined) {
+        const document = buildNewNoteDocument(title, content, format).replaceAll("\r", "").replaceAll("\t", "   ");
+        const highlighted = highlightCode(document, format);
+        while (highlighted.at(-1) === "") highlighted.pop();
+        const visible = context.expanded ? highlighted : highlighted.slice(0, CREATE_PREVIEW_LINES);
+        const remaining = highlighted.length - visible.length;
+        output += `\n\n${visible.join("\n")}`;
+        if (remaining > 0) {
+          output += `${theme.fg("muted", `\n... (${remaining} more lines, ${highlighted.length} total,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+        }
+      }
+
+      component.setText(output);
+      return component;
+    },
+    /** Renders the resolved note path after success or the structured tool error after failure. */
+    renderResult(result, _options, theme, context) {
+      const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (context.isError) {
+        const message = result.content
+          .filter((item) => item.type === "text")
+          .map((item) => item.text)
+          .join("\n");
+        component.setText(theme.fg("error", message));
+        return component;
+      }
+
+      const details = result.details;
+      const path = details && typeof details === "object" && "path" in details ? details.path : undefined;
+      component.setText(
+        typeof path === "string"
+          ? `${theme.fg("success", "✓ Created ")}${theme.fg("accent", path)}`
+          : theme.fg("success", "✓ Created Hubble note")
+      );
+      return component;
     },
   });
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
 import {
@@ -10,8 +10,8 @@ import {
   type EditNoteError,
   EditValidationError,
   ExistingFileError,
-  mapFileSystemError,
   MissingFileError,
+  mapFileSystemError,
   NoteNotFoundError,
   NoteReadError,
   type NoteReadResult,
@@ -20,10 +20,12 @@ import {
   VaultDiscoveryError,
 } from "./hubble-errors.ts";
 import {
+  assertNotePath,
   type HubbleNoteFormat,
   type HubblePath,
   isNotePath,
   resolveVaultDirectory,
+  resolveVaultPath,
   type VaultRoot,
 } from "./hubble-paths.ts";
 
@@ -165,6 +167,12 @@ function htmlDocument(title: string, content: string): string {
 </html>`;
 }
 
+/** Builds the complete document written for a new Markdown or HTML note. */
+export function buildNewNoteDocument(title: string, content: string, format: HubbleNoteFormat): string {
+  const trimmedTitle = title.trim();
+  return format === "html" ? htmlDocument(trimmedTitle, content) : `# ${trimmedTitle}\n\n${content}`;
+}
+
 /** Removes an incomplete newly created note while preserving creation and cleanup failures. */
 async function removeIncompleteNote(
   absolute: string,
@@ -192,17 +200,91 @@ async function removeIncompleteNote(
   );
 }
 
-/** Creates a uniquely named note in the requested format and optional folder. */
+interface CreateNoteDestination {
+  filename?: string;
+  format: HubbleNoteFormat;
+}
+
+/** Validates an optional exact filename and resolves the document format used during creation. */
+function resolveCreateNoteDestination(
+  filename: string | undefined,
+  format: HubbleNoteFormat | undefined
+): ResultType<CreateNoteDestination, NoteValidationError> {
+  if (filename === undefined) return Result.ok({ format: format ?? "markdown" });
+
+  const trimmedFilename = filename.trim();
+  if (!trimmedFilename) {
+    return Result.err(
+      new NoteValidationError({ reason: "filename", path: filename, message: "filename must not be empty." })
+    );
+  }
+  const containsControlCharacter = [...filename].some((character) => character.charCodeAt(0) < 32);
+  if (
+    trimmedFilename !== filename ||
+    /[\\/]/u.test(filename) ||
+    containsControlCharacter ||
+    basename(filename) !== filename
+  ) {
+    return Result.err(
+      new NoteValidationError({
+        reason: "filename",
+        path: filename,
+        message: "filename must be a single file name without path separators or surrounding whitespace.",
+      })
+    );
+  }
+
+  let filenameFormat: HubbleNoteFormat;
+  switch (extname(filename).toLowerCase()) {
+    case ".md":
+      filenameFormat = "markdown";
+      break;
+    case ".html":
+      filenameFormat = "html";
+      break;
+    default:
+      return Result.err(
+        new NoteValidationError({
+          reason: "filename",
+          path: filename,
+          message: "filename must end in a supported Hubble note extension (.md or .html).",
+        })
+      );
+  }
+
+  if (format !== undefined && format !== filenameFormat) {
+    return Result.err(
+      new NoteValidationError({
+        reason: "format",
+        path: filename,
+        message: "filename extension must match the requested Hubble note format.",
+      })
+    );
+  }
+
+  return Result.ok({ filename, format: format ?? filenameFormat });
+}
+
+/**
+ * Creates a note in the requested folder without overwriting an existing file.
+ * When filename is omitted, the title slug is used and collisions receive numeric suffixes.
+ * An explicit filename must be a supported basename and fails on collision.
+ */
 export async function writeNewVaultFile(
   vault: VaultRoot,
   title: string,
   content: string,
   folder = "",
-  format: HubbleNoteFormat = "markdown"
+  format?: HubbleNoteFormat,
+  filename?: string
 ): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
   if (!trimmedTitle)
     return Result.err(new NoteValidationError({ reason: "title", title, message: "title must not be empty." }));
+
+  const destination = resolveCreateNoteDestination(filename, format);
+  if (Result.isError(destination)) return destination;
+
   return withFileMutationQueue(vault.root, async () => {
     const rootCreated = await Result.tryPromise({
       try: () => mkdir(vault.root, { recursive: true }),
@@ -238,26 +320,41 @@ export async function writeNewVaultFile(
     if (Result.isError(directoryCreated)) return directoryCreated;
 
     const slug = slugifyTitle(trimmedTitle);
-    const extension = format === "html" ? ".html" : ".md";
-    const body = format === "html" ? htmlDocument(trimmedTitle, content) : `# ${trimmedTitle}\n\n${content}`;
-    for (let suffix = 0; suffix < 10_000; suffix++) {
-      const filename = `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}${extension}`;
-      const absolute = join(directory.value.absolute, filename);
-      const relativePath = directory.value.relative ? `${directory.value.relative}/${filename}` : filename;
+    const extension = destination.value.format === "html" ? ".html" : ".md";
+    const body = buildNewNoteDocument(trimmedTitle, content, destination.value.format);
+    const maximumAttempts = destination.value.filename === undefined ? 10_000 : 1;
+    for (let suffix = 0; suffix < maximumAttempts; suffix++) {
+      const candidateFilename =
+        destination.value.filename ?? `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}${extension}`;
+      const requestedPath = directory.value.relative
+        ? `${directory.value.relative}/${candidateFilename}`
+        : candidateFilename;
+      const target = await resolveVaultPath(vault, requestedPath);
+      if (Result.isError(target)) return target;
+      const supported = assertNotePath(target.value);
+      if (Result.isError(supported)) return supported;
+
+      const absolute = target.value.absolute;
+      const relativePath = target.value.relative;
       const opened = await Result.tryPromise({
         try: () => open(absolute, "wx"),
-        catch: (cause) =>
-          new NoteWriteError({
+        catch: (cause) => {
+          const filesystemError = mapFileSystemError(absolute, cause);
+          return new NoteWriteError({
             operation: "create",
             path: relativePath,
             title: trimmedTitle,
-            cause: mapFileSystemError(absolute, cause),
-            message: "Could not create the Hubble note.",
-          }),
+            cause: filesystemError,
+            message:
+              destination.value.filename !== undefined && ExistingFileError.is(filesystemError)
+                ? "A Hubble note already exists at the requested filename."
+                : "Could not create the Hubble note.",
+          });
+        },
       });
 
       if (Result.isError(opened)) {
-        if (ExistingFileError.is(opened.error.cause)) continue;
+        if (destination.value.filename === undefined && ExistingFileError.is(opened.error.cause)) continue;
         return opened;
       }
 

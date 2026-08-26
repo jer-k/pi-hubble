@@ -56,6 +56,10 @@ test("keeps Vault operations inside the root and protects symlinks", async () =>
   const htmlSymlinkEscape = await vault.read("escape.html");
   expect(htmlSymlinkEscape.status).toBe("error");
   if (htmlSymlinkEscape.status === "error") expect(htmlSymlinkEscape.error._tag).toBe("VaultPathError");
+
+  const createThroughSymlink = await vault.create("Safe Title", "changed", "", undefined, "escape.md");
+  expect(createThroughSymlink.status).toBe("error");
+  expect(await readFile(outside, "utf8")).toBe("outside");
 });
 
 test("atomically edits the canonical target of a symlink that stays inside the vault", async () => {
@@ -119,6 +123,70 @@ test("supports structured search and serialized exact mutations", async () => {
   expect(invalid.status).toBe("error");
 });
 
+test("uses exact optional filenames independently from titles and rejects unsafe or conflicting names", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-exact-filename-"));
+  const vault = await vaultAt(root);
+
+  const markdown = await vault.create("Jerms Is Testing", "body", "checks", undefined, "jerms-test.md");
+  expect(markdown.status).toBe("ok");
+  if (markdown.status === "ok") {
+    expect(markdown.value.relative).toBe("checks/jerms-test.md");
+    expect(await readFile(markdown.value.absolute, "utf8")).toBe("# Jerms Is Testing\n\nbody");
+  }
+
+  const html = await vault.create("Exact HTML", "<p>body</p>", "", undefined, "custom-page.HTML");
+  expect(html.status).toBe("ok");
+  if (html.status === "ok") {
+    expect(html.value.relative).toBe("custom-page.HTML");
+    expect(await readFile(html.value.absolute, "utf8")).toContain("<title>Exact HTML</title>");
+  }
+
+  const collision = await vault.create("Another Title", "replacement", "checks", undefined, "jerms-test.md");
+  expect(collision.status).toBe("error");
+  if (collision.status === "error") {
+    expect(collision.error._tag).toBe("NoteWriteError");
+    if (collision.error._tag === "NoteWriteError") {
+      expect(collision.error.path).toBe("checks/jerms-test.md");
+      expect(collision.error.cause).toMatchObject({ _tag: "ExistingFileError" });
+    }
+  }
+  await expect(readFile(join(root, "checks", "jerms-test-2.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+  for (const filename of ["../escape.md", "nested/escape.md", "nested\\escape.md", "/absolute.md", "note.txt"]) {
+    const invalid = await vault.create("Invalid", "", "", undefined, filename);
+    expect(invalid.status).toBe("error");
+    if (invalid.status === "error") {
+      expect(invalid.error._tag).toBe("NoteValidationError");
+      if (invalid.error._tag === "NoteValidationError") expect(invalid.error.reason).toBe("filename");
+    }
+  }
+
+  const mismatch = await vault.create("Mismatch", "", "", "html", "mismatch.md");
+  expect(mismatch.status).toBe("error");
+  if (mismatch.status === "error") {
+    expect(mismatch.error._tag).toBe("NoteValidationError");
+    if (mismatch.error._tag === "NoteValidationError") expect(mismatch.error.reason).toBe("format");
+  }
+});
+
+test("serializes concurrent creation attempts for an exact filename without overwriting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-exact-filename-concurrent-"));
+  const vault = await vaultAt(root);
+
+  const results = await Promise.all([
+    vault.create("First", "first", "", undefined, "shared.md"),
+    vault.create("Second", "second", "", undefined, "shared.md"),
+  ]);
+
+  expect(results.filter((result) => result.status === "ok")).toHaveLength(1);
+  const failure = results.find((result) => result.status === "error");
+  expect(failure?.status).toBe("error");
+  if (failure?.status === "error" && failure.error._tag === "NoteWriteError") {
+    expect(failure.error.cause).toMatchObject({ _tag: "ExistingFileError" });
+  }
+  expect(["# First\n\nfirst", "# Second\n\nsecond"]).toContain(await readFile(join(root, "shared.md"), "utf8"));
+});
+
 test("preserves a note's BOM, CRLF line endings, and permissions while editing", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-edit-format-"));
   const path = join(root, "formatted.md");
@@ -126,9 +194,7 @@ test("preserves a note's BOM, CRLF line endings, and permissions while editing",
   await chmod(path, 0o640);
   const vault = await vaultAt(root);
 
-  const edited = await vault.edit("formatted.md", [
-    { oldText: "Alpha\nBeta", newText: "Updated\nContent" },
-  ]);
+  const edited = await vault.edit("formatted.md", [{ oldText: "Alpha\nBeta", newText: "Updated\nContent" }]);
 
   expect(edited.status).toBe("ok");
   expect(await readFile(path, "utf8")).toBe("\uFEFF# Formatted\r\n\r\nUpdated\r\nContent\r\n");

@@ -75,9 +75,9 @@ The extension registers these Pi tools:
   returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
 - `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
-- `hubble_create(title, content, folder?, format?)` creates a new note,
-  optionally in a vault-relative folder. `format` is `markdown` (the default)
-  or `html`.
+- `hubble_create(title, content, filename?, folder?, format?)` creates a new
+  note, optionally with an exact filename or in a vault-relative folder.
+  `format` is `markdown` (the default) or `html`.
 - `hubble_edit(path, edits)` applies one or more exact, unique,
   non-overlapping text replacements to Markdown or HTML. Every edit is matched
   against the original note rather than the result of an earlier replacement.
@@ -88,11 +88,15 @@ HTML is searched as raw source. Search and read output is limited to 50 KB or
 2,000 lines; when output is truncated, the complete result is saved to a
 temporary file.
 
-`hubble_create` converts the title into a filename slug and never overwrites an
-existing note. Markdown creation preserves the `# Title` heading behavior. HTML
-creation escapes the title and wraps `content` as a body fragment in a valid
-standalone document. Collisions are format-specific, producing names such as
-`my-note-2.md` or `my-note-2.html`.
+When `filename` is omitted, `hubble_create` converts the title into a filename
+slug and resolves collisions with names such as `my-note-2.md` or
+`my-note-2.html`. When provided, `filename` must be a basename ending in `.md`
+or `.html`; it is used exactly, its extension determines the format when
+`format` is omitted, and creation fails if it already exists. Markdown creation
+preserves the `# Title` heading behavior. HTML creation escapes the title and
+wraps `content` as a body fragment in a valid standalone document. In Pi's TUI,
+create calls show a syntax-highlighted document preview that can be expanded
+with the normal tool expansion keybinding.
 
 Writes are serialized with Pi's file mutation queue. Existing notes are edited
 by writing and syncing a same-directory temporary file, closing it, and

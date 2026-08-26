@@ -109,14 +109,18 @@ export class Vault implements VaultRoot {
     return Result.ok({ note: resolved.value, content: content.value });
   }
 
-  /** Creates a uniquely named note, defaulting to Markdown, in the requested folder. */
+  /**
+   * Creates a note, defaulting to a title-derived Markdown filename.
+   * An optional exact filename determines the format from its extension and fails on collision.
+   */
   async create(
     title: string,
     content: string,
     folder = "",
-    format: HubbleNoteFormat = "markdown"
+    format?: HubbleNoteFormat,
+    filename?: string
   ): Promise<VaultCreateResult> {
-    return writeNewVaultFile(this, title, content, folder, format);
+    return writeNewVaultFile(this, title, content, folder, format, filename);
   }
 
   /**

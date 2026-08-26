@@ -219,26 +219,26 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
 
   try {
     await session.bindExtensions({ mode: "print" });
-    expect(session.getActiveToolNames()).toEqual([
-      "hubble_search",
-      "hubble_read",
-      "hubble_create",
-      "hubble_edit",
-    ]);
+    expect(session.getActiveToolNames()).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
 
     const created = await getTool(session, "hubble_create").execute(
       "create",
-      { title: "Integration Tool Note", content: "Alpha\nBeta", folder: "checks" },
+      {
+        title: "Integration Tool Note",
+        content: "Alpha\nBeta",
+        filename: "integration-custom-name.md",
+        folder: "checks",
+      },
       undefined,
       undefined
     );
-    expect(toolText(created)).toBe("Created Hubble note: checks/integration-tool-note.md");
-    expect(created.details).toEqual({ path: "checks/integration-tool-note.md" });
+    expect(toolText(created)).toBe("Created Hubble note: checks/integration-custom-name.md");
+    expect(created.details).toEqual({ path: "checks/integration-custom-name.md" });
 
     const edited = await getTool(session, "hubble_edit").execute(
       "edit",
       {
-        path: "checks/integration-tool-note.md",
+        path: "checks/integration-custom-name.md",
         edits: [
           { oldText: "Alpha", newText: "Updated Alpha" },
           { oldText: "Beta", newText: "Updated Beta\nGamma" },
@@ -247,17 +247,17 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       undefined,
       undefined
     );
-    expect(edited.details).toEqual({ path: "checks/integration-tool-note.md", editCount: 2 });
+    expect(edited.details).toEqual({ path: "checks/integration-custom-name.md", editCount: 2 });
 
     const read = await getTool(session, "hubble_read").execute(
       "read",
-      { path: "checks/integration-tool-note.md", offset: 3, limit: 2 },
+      { path: "checks/integration-custom-name.md", offset: 3, limit: 2 },
       undefined,
       undefined
     );
-    expect(toolText(read)).toBe("Path: checks/integration-tool-note.md\n\nUpdated Alpha\nUpdated Beta");
+    expect(toolText(read)).toBe("Path: checks/integration-custom-name.md\n\nUpdated Alpha\nUpdated Beta");
     expect(read.details).toMatchObject({
-      path: "checks/integration-tool-note.md",
+      path: "checks/integration-custom-name.md",
       startLine: 3,
       returnedLines: 2,
       totalLines: 5,
@@ -271,11 +271,11 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       undefined
     );
     expect(toolText(search)).toBe(
-      "checks/integration-tool-note.md:3: Updated Alpha\nchecks/integration-tool-note.md:4: Updated Beta"
+      "checks/integration-custom-name.md:3: Updated Alpha\nchecks/integration-custom-name.md:4: Updated Beta"
     );
     expect(search.details).toMatchObject({ query: "updated", matchCount: 2, truncated: false });
 
-    expect(await readFile(join(vault, "checks", "integration-tool-note.md"), "utf8")).toBe(
+    expect(await readFile(join(vault, "checks", "integration-custom-name.md"), "utf8")).toBe(
       "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma"
     );
 

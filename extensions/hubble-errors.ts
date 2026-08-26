@@ -49,7 +49,7 @@ export class VaultPathError extends TaggedError("VaultPathError")<{
   message: string;
 }> {}
 
-export type NoteValidationReason = "title" | "query";
+export type NoteValidationReason = "title" | "query" | "filename" | "format";
 export class NoteValidationError extends TaggedError("NoteValidationError")<{
   reason: NoteValidationReason;
   path?: string;
