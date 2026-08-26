@@ -42,6 +42,6 @@
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.1",
     "@earendil-works/pi-tui": "^0.84.2",
-    "better-result": "3.0.0"
+    "better-result": "3.0.1"
   }
 }
