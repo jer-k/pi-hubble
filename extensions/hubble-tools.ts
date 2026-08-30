@@ -1,8 +1,9 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import * as nodeFileSystem from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -15,10 +16,18 @@ import {
 import { Text } from "@earendil-works/pi-tui";
 import { Result, type Result as ResultType } from "better-result";
 import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
+
 import type { GetVault } from "./hubble-config.ts";
 import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
 import { buildNewNoteDocument } from "./hubble-notes.ts";
 import type { NoteSearchResult } from "./hubble-vault.ts";
+
+/** Filesystem operations used to persist truncated output and injectable in failure-path tests. */
+export interface OutputFileSystem {
+  mkdtemp(prefix: string): Promise<string>;
+  writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
+}
 
 /** Tool output after applying Pi's context-size limits. */
 export interface TruncatedOutput {
@@ -81,48 +90,50 @@ const EditParameters = Type.Object({
 
 type HubbleCreateArguments = Static<typeof CreateParameters>;
 type HubbleEditArguments = Static<typeof EditParameters>;
+type HubbleEditArgumentPreparer = NonNullable<ToolDefinition<typeof EditParameters>["prepareArguments"]>;
 
 const CREATE_PREVIEW_LINES = 10;
-
-interface UnpreparedHubbleEditArguments {
-  readonly edits?: unknown;
-  readonly oldText?: unknown;
-  readonly newText?: unknown;
-}
-
-/** Narrows unknown model output to the fields handled before schema validation. */
-function isUnpreparedHubbleEditArguments(input: unknown): input is UnpreparedHubbleEditArguments {
-  return typeof input === "object" && input !== null;
-}
+const StringValue = Type.String();
+const UnpreparedHubbleEditParameters = Type.Object(
+  {
+    edits: Type.Optional(Type.Unknown()),
+    oldText: Type.Optional(Type.Unknown()),
+    newText: Type.Optional(Type.Unknown()),
+  },
+  { additionalProperties: true }
+);
+const NotePathDetails = Type.Object({ path: Type.String() }, { additionalProperties: true });
 
 /** Passes prepared arguments to Pi's mandatory post-prepare Typebox validation. */
-function deferToSchemaValidation(input: unknown): HubbleEditArguments {
+const deferToSchemaValidation: HubbleEditArgumentPreparer = (input) => {
   // SAFETY: Pi always validates prepareArguments output against EditParameters before execute runs. Invalid model
   // output must be returned unchanged so that boundary validation, rather than this compatibility shim, reports it.
   return input as HubbleEditArguments;
-}
+};
 
 /** Normalizes model-generated edit arguments before Typebox validates the public schema. */
-function prepareHubbleEditArguments(input: unknown): HubbleEditArguments {
-  if (!isUnpreparedHubbleEditArguments(input)) return deferToSchemaValidation(input);
+const prepareHubbleEditArguments: HubbleEditArgumentPreparer = (input) => {
+  if (!Value.Check(UnpreparedHubbleEditParameters, input)) return deferToSchemaValidation(input);
 
   const args = { ...input };
-  if (typeof args.edits === "string") {
+  if (Value.Check(StringValue, args.edits)) {
     const serializedEdits = args.edits;
     const parsed = Result.try({
-      try: (): unknown => JSON.parse(serializedEdits),
+      try: () => JSON.parse(serializedEdits),
       catch: () => undefined,
     });
     if (Result.isOk(parsed) && Array.isArray(parsed.value)) args.edits = parsed.value;
   }
 
-  if (typeof args.oldText !== "string" || typeof args.newText !== "string") return deferToSchemaValidation(args);
+  if (!Value.Check(StringValue, args.oldText) || !Value.Check(StringValue, args.newText)) {
+    return deferToSchemaValidation(args);
+  }
 
   const edits = Array.isArray(args.edits) ? [...args.edits] : [];
   edits.push({ oldText: args.oldText, newText: args.newText });
   const { oldText: _oldText, newText: _newText, ...rest } = args;
   return deferToSchemaValidation({ ...rest, edits });
-}
+};
 
 /** Returns a successful Result value or raises its Hubble failure for the tool API. */
 function unwrap<T, E extends HubbleFailure>(result: ResultType<T, E>): T {
@@ -141,12 +152,15 @@ function noteResult<TDetails extends object>(text: string, details: TDetails): A
 }
 
 /** Truncates tool output for model context and saves the complete output when needed. */
-export async function truncateOutput(output: string): Promise<ResultType<TruncatedOutput, OutputPersistenceError>> {
+export async function truncateOutput(
+  output: string,
+  fileSystem: OutputFileSystem = nodeFileSystem
+): Promise<ResultType<TruncatedOutput, OutputPersistenceError>> {
   const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
   if (!truncation.truncated) return Result.ok({ text: truncation.content, truncated: false });
 
   const directory = await Result.tryPromise({
-    try: () => mkdtemp(join(tmpdir(), "pi-hubble-")),
+    try: () => fileSystem.mkdtemp(join(tmpdir(), "pi-hubble-")),
     catch: (cause) => new OutputPersistenceError({ cause, message: "Could not persist the full Hubble tool output." }),
   });
 
@@ -155,7 +169,7 @@ export async function truncateOutput(output: string): Promise<ResultType<Truncat
   const fullOutputPath = join(directory.value, "output.txt");
   const persisted = await withFileMutationQueue(fullOutputPath, () =>
     Result.tryPromise({
-      try: () => writeFile(fullOutputPath, output, "utf8"),
+      try: () => fileSystem.writeFile(fullOutputPath, output, "utf8"),
       catch: (cause) =>
         new OutputPersistenceError({ cause, message: "Could not persist the full Hubble tool output." }),
     })
@@ -170,8 +184,13 @@ export async function truncateOutput(output: string): Promise<ResultType<Truncat
   });
 }
 
+interface FormattedSearchResults {
+  readonly lines: ReadonlyArray<string>;
+  readonly count: number;
+}
+
 /** Converts note search matches into the line-oriented tool output format. */
-function formatSearchResults(results: NoteSearchResult[], limit: number): { lines: string[]; count: number } {
+function formatSearchResults(results: NoteSearchResult[], limit: number): FormattedSearchResults {
   const lines: string[] = [];
   for (const result of results) {
     for (const match of result.matches) {
@@ -283,12 +302,12 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     renderCall(args, theme, context) {
       const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
       const partialArgs: Partial<HubbleCreateArguments> = args;
-      const title = typeof partialArgs.title === "string" ? partialArgs.title : "";
-      const content = typeof partialArgs.content === "string" ? partialArgs.content : undefined;
-      const filename = typeof partialArgs.filename === "string" ? partialArgs.filename : "";
+      const title = partialArgs.title ?? "";
+      const content = partialArgs.content;
+      const filename = partialArgs.filename ?? "";
       const inferredFormat = filename.toLowerCase().endsWith(".html") ? "html" : "markdown";
       const format = partialArgs.format === "html" ? "html" : inferredFormat;
-      const folder = typeof partialArgs.folder === "string" ? partialArgs.folder.trim() : "";
+      const folder = partialArgs.folder?.trim() ?? "";
       const destination = filename ? `${folder ? `${folder}/` : ""}${filename}` : folder ? `${folder}/` : "vault root";
       const titleDisplay = title ? JSON.stringify(title) : "...";
       let output = `${theme.fg("toolTitle", theme.bold("hubble_create"))} ${theme.fg("accent", titleDisplay)}`;
@@ -322,11 +341,11 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       }
 
       const details = result.details;
-      const path = details && typeof details === "object" && "path" in details ? details.path : undefined;
+      const path = Value.Check(NotePathDetails, details) ? details.path : undefined;
       component.setText(
-        typeof path === "string"
-          ? `${theme.fg("success", "✓ Created ")}${theme.fg("accent", path)}`
-          : theme.fg("success", "✓ Created Hubble note")
+        path === undefined
+          ? theme.fg("success", "✓ Created Hubble note")
+          : `${theme.fg("success", "✓ Created ")}${theme.fg("accent", path)}`
       );
       return component;
     },

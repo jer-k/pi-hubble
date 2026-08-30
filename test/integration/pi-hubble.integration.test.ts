@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
+
 import {
   type AgentSession,
   type AgentToolResult,
@@ -17,6 +18,8 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { expect, test } from "vitest";
 
 type PromptRpcResponse = Extract<RpcResponse, { readonly command: "prompt"; readonly success: true }>;
@@ -31,69 +34,79 @@ type RpcExtensionError = {
 };
 type RpcMessage = PromptRpcResponse | FailedRpcResponse | RpcNotification | RpcEditorUpdate | RpcExtensionError;
 
+const RpcEnvelope = Type.Object({ type: Type.String() }, { additionalProperties: true });
+const RpcResponseMessage = Type.Object(
+  {
+    type: Type.Literal("response"),
+    command: Type.String(),
+    success: Type.Boolean(),
+    id: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true }
+);
+const RpcUiRequestMessage = Type.Object(
+  {
+    type: Type.Literal("extension_ui_request"),
+    id: Type.String(),
+    method: Type.String(),
+    message: Type.Optional(Type.String()),
+    text: Type.Optional(Type.String()),
+    notifyType: Type.Optional(Type.Union([Type.Literal("info"), Type.Literal("warning"), Type.Literal("error")])),
+  },
+  { additionalProperties: true }
+);
+const RpcExtensionErrorMessage = Type.Object(
+  {
+    type: Type.Literal("extension_error"),
+    extensionPath: Type.String(),
+    event: Type.String(),
+    error: Type.String(),
+  },
+  { additionalProperties: true }
+);
+
 /** Parses the RPC message variants observed by the CLI integration test and ignores unrelated session events. */
 function parseRpcMessage(line: string): RpcMessage | undefined {
-  const input: unknown = JSON.parse(line);
-  if (typeof input !== "object" || input === null || !("type" in input) || typeof input.type !== "string") {
-    throw new Error("Pi emitted an invalid RPC message envelope.");
-  }
+  const input = JSON.parse(line);
+  if (!Value.Check(RpcEnvelope, input)) throw new Error("Pi emitted an invalid RPC message envelope.");
 
   if (input.type === "response") {
-    if (!("command" in input) || typeof input.command !== "string" || !("success" in input)) {
-      throw new Error("Pi emitted an invalid RPC response.");
-    }
-    if (typeof input.success !== "boolean") throw new Error("Pi emitted an invalid RPC response status.");
-    const id = "id" in input ? input.id : undefined;
-    if (id !== undefined && typeof id !== "string") throw new Error("Pi emitted an invalid RPC response id.");
+    if (!Value.Check(RpcResponseMessage, input)) throw new Error("Pi emitted an invalid RPC response.");
+    const { id } = input;
 
     if (input.success) {
       if (input.command !== "prompt") return undefined;
-      return {
-        type: "response",
-        command: "prompt",
-        success: true,
-        ...(id === undefined ? {} : { id }),
-      };
+      const response = { type: "response", command: "prompt", success: true } as const;
+      return id === undefined ? response : { ...response, id };
     }
 
-    if (!("error" in input) || typeof input.error !== "string") {
-      throw new Error("Pi emitted an invalid failed RPC response.");
-    }
-    return {
+    if (input.error === undefined) throw new Error("Pi emitted an invalid failed RPC response.");
+    const response = {
       type: "response",
       command: input.command,
       success: false,
       error: input.error,
-      ...(id === undefined ? {} : { id }),
-    };
+    } as const;
+    return id === undefined ? response : { ...response, id };
   }
 
   if (input.type === "extension_ui_request") {
-    if (!("id" in input) || typeof input.id !== "string" || !("method" in input) || typeof input.method !== "string") {
-      throw new Error("Pi emitted an invalid extension UI request.");
-    }
+    if (!Value.Check(RpcUiRequestMessage, input)) throw new Error("Pi emitted an invalid extension UI request.");
 
     if (input.method === "notify") {
-      if (!("message" in input) || typeof input.message !== "string") {
-        throw new Error("Pi emitted an invalid extension notification.");
-      }
-      const notifyType = "notifyType" in input ? input.notifyType : undefined;
-      if (notifyType !== undefined && notifyType !== "info" && notifyType !== "warning" && notifyType !== "error") {
-        throw new Error("Pi emitted an invalid extension notification type.");
-      }
-      return {
+      if (input.message === undefined) throw new Error("Pi emitted an invalid extension notification.");
+      const notification = {
         type: "extension_ui_request",
         id: input.id,
         method: "notify",
         message: input.message,
-        ...(notifyType === undefined ? {} : { notifyType }),
-      };
+      } as const;
+      return input.notifyType === undefined ? notification : { ...notification, notifyType: input.notifyType };
     }
 
     if (input.method === "set_editor_text") {
-      if (!("text" in input) || typeof input.text !== "string") {
-        throw new Error("Pi emitted an invalid editor update request.");
-      }
+      if (input.text === undefined) throw new Error("Pi emitted an invalid editor update request.");
       return { type: "extension_ui_request", id: input.id, method: "set_editor_text", text: input.text };
     }
 
@@ -101,16 +114,7 @@ function parseRpcMessage(line: string): RpcMessage | undefined {
   }
 
   if (input.type === "extension_error") {
-    if (
-      !("extensionPath" in input) ||
-      typeof input.extensionPath !== "string" ||
-      !("event" in input) ||
-      typeof input.event !== "string" ||
-      !("error" in input) ||
-      typeof input.error !== "string"
-    ) {
-      throw new Error("Pi emitted an invalid extension error.");
-    }
+    if (!Value.Check(RpcExtensionErrorMessage, input)) throw new Error("Pi emitted an invalid extension error.");
     return {
       type: "extension_error",
       extensionPath: input.extensionPath,
@@ -384,9 +388,7 @@ test("edits a Hubble note through the Pi SDK runtime", async () => {
     );
 
     expect(edited.details).toEqual({ path: "checks/integration-custom-name.md", editCount: 2 });
-    expect(await readFile(notePath, "utf8")).toBe(
-      "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma"
-    );
+    expect(await readFile(notePath, "utf8")).toBe("# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma");
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });

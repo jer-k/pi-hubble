@@ -1,6 +1,8 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
 import { Result, type Result as ResultType } from "better-result";
+
 import {
   MissingFileError,
   mapFileSystemError,
@@ -24,7 +26,7 @@ export interface HubblePath {
 
 /** Nominal base for canonical vault roots accepted by low-level storage operations. */
 export abstract class VaultRoot {
-  private declare readonly vaultRootBrand: undefined;
+  declare private readonly vaultRootBrand: undefined;
   abstract readonly root: string;
 }
 

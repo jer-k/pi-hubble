@@ -130,7 +130,10 @@ Run the unit test suite and checks with:
 npm test
 npm run typecheck
 npm run lint
+npm run format:check
 ```
+
+Use `npm run format` to apply Oxfmt, including deterministic import ordering.
 
 Run the Pi CLI integration smoke test separately:
 

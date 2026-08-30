@@ -1,13 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType, TaggedError } from "better-result";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
 import { mapFileSystemError, MissingFileError, type VaultOpenErrorType } from "./hubble-errors.ts";
 import type { Vault } from "./hubble-vault.ts";
 
 const CONFIG_FILENAME = "hubble.json";
+const StringValue = Type.String();
+const ConfigObject = Type.Record(Type.String(), Type.Unknown());
+type HubbleDirFlagInput = ReturnType<ExtensionAPI["getFlag"]>;
 
 /** Failure to read a Hubble configuration file. */
 export class ConfigReadError extends TaggedError("ConfigReadError")<{
@@ -59,11 +66,11 @@ function expandPath(value: string, cwd: string, source: string): ResultType<stri
   return Result.ok(isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed));
 }
 
-/** Validates and normalizes the optional --hubble-dir flag value. */
-function getStringFlag(value: unknown): ResultType<string | undefined, InvalidConfigError> {
+/** Parses and normalizes the optional --hubble-dir flag value. */
+function parseStringFlag(value: HubbleDirFlagInput): ResultType<string | undefined, InvalidConfigError> {
   if (value === undefined || value === null || value === false) return Result.ok(undefined);
 
-  if (typeof value !== "string") {
+  if (!Value.Check(StringValue, value)) {
     return Result.err(
       new InvalidConfigError({ path: "--hubble-dir", input: value, message: "--hubble-dir requires a non-empty path." })
     );
@@ -96,7 +103,7 @@ async function readConfiguredRoot(
   }
 
   const parsed = Result.try({
-    try: (): unknown => JSON.parse(source.value),
+    try: () => JSON.parse(source.value),
     catch: (cause) =>
       new ConfigParseError({
         path: configPath,
@@ -107,16 +114,16 @@ async function readConfiguredRoot(
 
   if (Result.isError(parsed)) return parsed;
 
-  if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
+  if (!Value.Check(ConfigObject, parsed.value)) {
     return Result.err(
       new InvalidConfigError({ path: configPath, message: "The Hubble configuration must be a JSON object." })
     );
   }
 
-  const root = "root" in parsed.value ? parsed.value.root : undefined;
+  const root = parsed.value.root;
   if (root === undefined) return Result.ok(undefined);
 
-  if (typeof root !== "string") {
+  if (!Value.Check(StringValue, root)) {
     return Result.err(
       new InvalidConfigError({
         path: configPath,
@@ -131,11 +138,11 @@ async function readConfiguredRoot(
 
 /** Resolves the vault root using CLI, trusted local, then global configuration precedence. */
 export async function resolveHubbleRoot(
-  cliValue: unknown,
+  cliValue: HubbleDirFlagInput,
   cwd = process.cwd(),
   projectTrusted = true
 ): Promise<ResultType<string, ConfigError>> {
-  const cliRoot = getStringFlag(cliValue);
+  const cliRoot = parseStringFlag(cliValue);
   if (Result.isError(cliRoot)) return cliRoot;
   if (cliRoot.value !== undefined) return expandPath(cliRoot.value, cwd, "--hubble-dir");
 
@@ -152,12 +159,11 @@ export async function resolveHubbleRoot(
 
   const configuredRoot = localRoot.value ?? globalRoot.value;
   if (configuredRoot === undefined) {
+    const message = "Hubble vault is not configured. Set a Hubble root or pass --hubble-dir /path/to/vault.";
     return Result.err(
-      new VaultNotConfiguredError({
-        globalPath,
-        ...(projectTrusted ? { localPath } : {}),
-        message: "Hubble vault is not configured. Set a Hubble root or pass --hubble-dir /path/to/vault.",
-      })
+      projectTrusted
+        ? new VaultNotConfiguredError({ globalPath, localPath, message })
+        : new VaultNotConfiguredError({ globalPath, message })
     );
   }
 

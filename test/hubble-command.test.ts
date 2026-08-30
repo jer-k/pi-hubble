@@ -1,13 +1,17 @@
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expect, test } from "vitest";
-import { registerHubbleCommand } from "../extensions/hubble-command.ts";
-import { openVault } from "../extensions/hubble-vault.ts";
 
-type CommandHandler = (args: string, ctx: unknown) => Promise<void>;
-type CommandOptions = { getArgumentCompletions?: (prefix: string) => unknown; handler: CommandHandler };
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { expect, test } from "vitest";
+
+import { registerHubbleCommand } from "../extensions/hubble-command.ts";
+import { type NoteReference, openVault } from "../extensions/hubble-vault.ts";
+import { testCast } from "./test-cast.ts";
+
+type RegisteredCommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+type CommandHandler = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
+type CommandOptions = Pick<RegisteredCommandOptions, "getArgumentCompletions"> & { handler: CommandHandler };
 
 function createPi() {
   let command: { options: CommandOptions } | undefined;
@@ -20,7 +24,7 @@ function createPi() {
       sentMessages.push(message);
     },
   };
-  return { pi: pi as unknown as ExtensionAPI, getCommand: () => command, sentMessages };
+  return { pi: testCast<typeof pi, ExtensionAPI>(pi), getCommand: () => command, sentMessages };
 }
 
 type TestContextOptions = {
@@ -41,14 +45,7 @@ function createContext(options: TestContextOptions = {}) {
         editorText = text;
       },
       notify: (message: string) => notifications.push(message),
-      custom: async (factory: (...args: unknown[]) => unknown) => {
-        let selected: unknown;
-        const component = factory({}, {}, {}, (value: unknown) => {
-          selected = value;
-        });
-        void component;
-        return selected;
-      },
+      custom: async (): Promise<NoteReference | undefined> => undefined,
       input: async (): Promise<string | undefined> => undefined,
     },
   };
@@ -57,6 +54,15 @@ function createContext(options: TestContextOptions = {}) {
 
 async function getVault(root: string) {
   return openVault(root);
+}
+
+/** Invokes a registered command with the focused context fake used by these tests. */
+async function runCommand(
+  command: CommandOptions | undefined,
+  args: string,
+  ctx: ReturnType<typeof createContext>["ctx"]
+) {
+  await command?.handler(args, testCast<typeof ctx, ExtensionCommandContext>(ctx));
 }
 
 test("registers find/search behavior and attaches a selected note", async () => {
@@ -72,15 +78,20 @@ test("registers find/search behavior and attaches a selected note", async () => 
     { value: "search", label: "search", description: "Search note contents" },
   ]);
 
-  const selected = { absolute: notePath, relative: "notes/one.md" };
+  const opened = await openVault(root);
+  if (opened.status === "error") throw opened.error;
+  const listed = await opened.value.list();
+  if (listed.status === "error") throw listed.error;
+  const selected = listed.value.find((note) => note.relative === "notes/one.md");
+  if (selected === undefined) throw new Error("Expected the test note in the vault listing");
   const interactive = createContext();
   interactive.ctx.ui.custom = async () => selected;
-  await command?.options.handler("find one", interactive.ctx);
-  expect(interactive.getEditorText()).toBe(`existing @${notePath}`);
+  await runCommand(command?.options, "find one", interactive.ctx);
+  expect(interactive.getEditorText()).toBe(`existing @${selected.absolute}`);
   expect(interactive.notifications).toEqual([`Attached Hubble note: ${selected.relative}`]);
 
   const noUi = createContext({ hasUI: false });
-  await command?.options.handler("", noUi.ctx);
+  await runCommand(command?.options, "", noUi.ctx);
   expect(noUi.notifications).toEqual(["/hubble requires interactive UI mode."]);
 });
 
@@ -90,24 +101,24 @@ test("creates titled Markdown and HTML notes and handles an empty vault", async 
   registerHubbleCommand(pi, () => getVault(root));
   const command = getCommand();
   const ctx = createContext();
-  await command?.options.handler("new New note --folder=work", ctx.ctx);
+  await runCommand(command?.options, "new New note --folder=work", ctx.ctx);
   expect(ctx.notifications[0]).toBe("Created Hubble note: work/new-note.md");
   expect(ctx.getEditorText()).toContain(`@${join(await realpath(root), "work", "new-note.md")}`);
 
   const html = createContext();
-  await command?.options.handler("new HTML page --folder=work --format html", html.ctx);
+  await runCommand(command?.options, "new HTML page --folder=work --format html", html.ctx);
   expect(html.notifications[0]).toBe("Created Hubble note: work/html-page.html");
   expect(html.getEditorText()).toContain(`@${join(await realpath(root), "work", "html-page.html")}`);
 
   const assisted = createContext();
   assisted.ctx.ui.input = async () => "";
-  await command?.options.handler("new --format html --folder=work", assisted.ctx);
+  await runCommand(command?.options, "new --format html --folder=work", assisted.ctx);
   expect(sentMessages).toHaveLength(1);
   expect(sentMessages[0]).toContain("HTML body fragment");
   expect(sentMessages[0]).toContain('format to "html"');
 
   const invalid = createContext();
-  await command?.options.handler("new Invalid --format pdf --folder=work", invalid.ctx);
+  await runCommand(command?.options, "new Invalid --format pdf --folder=work", invalid.ctx);
   expect(invalid.notifications).toEqual(["Hubble note format must be 'markdown' or 'html'."]);
 
   const emptyRoot = await mkdtemp(join(tmpdir(), "pi-hubble-command-empty-"));
@@ -115,6 +126,6 @@ test("creates titled Markdown and HTML notes and handles an empty vault", async 
   empty.ctx.ui.custom = async () => undefined;
   registerHubbleCommand(pi, () => getVault(emptyRoot));
   const secondCommand = getCommand();
-  await secondCommand?.options.handler("find", empty.ctx);
+  await runCommand(secondCommand?.options, "find", empty.ctx);
   expect(empty.notifications).toEqual(["The Hubble vault has no notes."]);
 });

@@ -12,8 +12,13 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const upstreamRepository = "https://github.com/bholmesdev/hubble-skills.git";
 const selectedSkills = ["create-html-app"];
 
+interface SyncArguments {
+  readonly check: boolean;
+  readonly ref: string;
+}
+
 /** Parses supported command-line options for the upstream sync. */
-function parseArguments(args: string[]): { check: boolean; ref: string } {
+function parseArguments(args: string[]): SyncArguments {
   let check = false;
   let ref = "main";
 
@@ -73,9 +78,9 @@ async function snapshotDirectory(directory: string): Promise<Map<string, Buffer>
       files.map(async (path): Promise<[string, Buffer]> => [path, await readFile(join(directory, path))])
     );
     return new Map(entries);
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return new Map();
-    throw error;
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return new Map();
+    throw cause;
   }
 }
 
@@ -154,7 +159,7 @@ async function main(): Promise<void> {
   }
 }
 
-await main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
+await main().catch((cause: unknown) => {
+  console.error(cause instanceof Error ? cause.message : String(cause));
   process.exitCode = 1;
 });
