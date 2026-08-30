@@ -32,3 +32,8 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Integration tests
+        run: npm run test:integration
+        env:
+          PI_OFFLINE: "1"
