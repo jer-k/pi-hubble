@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import type { NoteReference } from "../extensions/hubble-notes.ts";
 import { HubbleNotePicker } from "../extensions/hubble-ui.ts";
 
 const theme = {
@@ -9,14 +10,16 @@ const keybindings = {
   matches: (data: string, key: string) =>
     (data === "\r" && key === "tui.select.confirm") || (data === "\u001b" && key === "tui.select.cancel"),
 };
-const notes = [
-  { absolute: "/vault/alpha.md", relative: "alpha.md" },
-  { absolute: "/vault/project.html", relative: "project.html" },
-];
+function noteReference(absolute: string, relative: string): NoteReference {
+  // SAFETY: These inert picker fixtures never reach filesystem operations; the paths model already-resolved notes.
+  return { absolute, relative } as NoteReference;
+}
+
+const notes = [noteReference("/vault/alpha.md", "alpha.md"), noteReference("/vault/project.html", "project.html")];
 
 test("renders notes, filters text, tracks focus, and attaches selections", () => {
   let renders = 0;
-  let selected: (typeof notes)[number] | undefined;
+  let selected: NoteReference | undefined;
   const picker = new HubbleNotePicker(
     { requestRender: () => renders++ },
     theme,
@@ -24,7 +27,7 @@ test("renders notes, filters text, tracks focus, and attaches selections", () =>
     notes,
     "project",
     (note) => {
-      selected = note as (typeof notes)[number] | undefined;
+      selected = note;
     }
   );
 

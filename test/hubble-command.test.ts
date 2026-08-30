@@ -23,12 +23,16 @@ function createPi() {
   return { pi: pi as unknown as ExtensionAPI, getCommand: () => command, sentMessages };
 }
 
-function createContext(overrides: Record<string, unknown> = {}) {
+type TestContextOptions = {
+  readonly hasUI?: boolean;
+};
+
+function createContext(options: TestContextOptions = {}) {
   const notifications: string[] = [];
   let editorText = "existing";
   const ctx = {
     cwd: process.cwd(),
-    hasUI: true,
+    hasUI: options.hasUI ?? true,
     isProjectTrusted: () => true,
     isIdle: () => true,
     ui: {
@@ -47,7 +51,6 @@ function createContext(overrides: Record<string, unknown> = {}) {
       },
       input: async (): Promise<string | undefined> => undefined,
     },
-    ...overrides,
   };
   return { ctx, notifications, getEditorText: () => editorText };
 }

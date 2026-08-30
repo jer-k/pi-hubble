@@ -11,13 +11,116 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   type ExtensionUIContext,
+  type RpcExtensionUIRequest,
+  type RpcResponse,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider } from "@earendil-works/pi-tui";
 import { expect, test } from "vitest";
 
-type RpcMessage = Record<string, unknown>;
+type PromptRpcResponse = Extract<RpcResponse, { readonly command: "prompt"; readonly success: true }>;
+type FailedRpcResponse = Extract<RpcResponse, { readonly success: false }>;
+type RpcNotification = Extract<RpcExtensionUIRequest, { readonly method: "notify" }>;
+type RpcEditorUpdate = Extract<RpcExtensionUIRequest, { readonly method: "set_editor_text" }>;
+type RpcExtensionError = {
+  readonly type: "extension_error";
+  readonly extensionPath: string;
+  readonly event: string;
+  readonly error: string;
+};
+type RpcMessage = PromptRpcResponse | FailedRpcResponse | RpcNotification | RpcEditorUpdate | RpcExtensionError;
+
+/** Parses the RPC message variants observed by the CLI integration test and ignores unrelated session events. */
+function parseRpcMessage(line: string): RpcMessage | undefined {
+  const input: unknown = JSON.parse(line);
+  if (typeof input !== "object" || input === null || !("type" in input) || typeof input.type !== "string") {
+    throw new Error("Pi emitted an invalid RPC message envelope.");
+  }
+
+  if (input.type === "response") {
+    if (!("command" in input) || typeof input.command !== "string" || !("success" in input)) {
+      throw new Error("Pi emitted an invalid RPC response.");
+    }
+    if (typeof input.success !== "boolean") throw new Error("Pi emitted an invalid RPC response status.");
+    const id = "id" in input ? input.id : undefined;
+    if (id !== undefined && typeof id !== "string") throw new Error("Pi emitted an invalid RPC response id.");
+
+    if (input.success) {
+      if (input.command !== "prompt") return undefined;
+      return {
+        type: "response",
+        command: "prompt",
+        success: true,
+        ...(id === undefined ? {} : { id }),
+      };
+    }
+
+    if (!("error" in input) || typeof input.error !== "string") {
+      throw new Error("Pi emitted an invalid failed RPC response.");
+    }
+    return {
+      type: "response",
+      command: input.command,
+      success: false,
+      error: input.error,
+      ...(id === undefined ? {} : { id }),
+    };
+  }
+
+  if (input.type === "extension_ui_request") {
+    if (!("id" in input) || typeof input.id !== "string" || !("method" in input) || typeof input.method !== "string") {
+      throw new Error("Pi emitted an invalid extension UI request.");
+    }
+
+    if (input.method === "notify") {
+      if (!("message" in input) || typeof input.message !== "string") {
+        throw new Error("Pi emitted an invalid extension notification.");
+      }
+      const notifyType = "notifyType" in input ? input.notifyType : undefined;
+      if (notifyType !== undefined && notifyType !== "info" && notifyType !== "warning" && notifyType !== "error") {
+        throw new Error("Pi emitted an invalid extension notification type.");
+      }
+      return {
+        type: "extension_ui_request",
+        id: input.id,
+        method: "notify",
+        message: input.message,
+        ...(notifyType === undefined ? {} : { notifyType }),
+      };
+    }
+
+    if (input.method === "set_editor_text") {
+      if (!("text" in input) || typeof input.text !== "string") {
+        throw new Error("Pi emitted an invalid editor update request.");
+      }
+      return { type: "extension_ui_request", id: input.id, method: "set_editor_text", text: input.text };
+    }
+
+    return undefined;
+  }
+
+  if (input.type === "extension_error") {
+    if (
+      !("extensionPath" in input) ||
+      typeof input.extensionPath !== "string" ||
+      !("event" in input) ||
+      typeof input.event !== "string" ||
+      !("error" in input) ||
+      typeof input.error !== "string"
+    ) {
+      throw new Error("Pi emitted an invalid extension error.");
+    }
+    return {
+      type: "extension_error",
+      extensionPath: input.extensionPath,
+      event: input.event,
+      error: input.error,
+    };
+  }
+
+  return undefined;
+}
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const extensionPath = join(repositoryRoot, "extensions", "hubble.ts");
@@ -47,18 +150,18 @@ function runPi(vault: string): Promise<RpcMessage[]> {
         stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
         if (line.endsWith("\r")) line = line.slice(0, -1);
         if (!line) continue;
-        const message = JSON.parse(line) as RpcMessage;
-        messages.push(message);
-        if (message.type === "response" && message.id === "create") {
-          receivedResponse = true;
-          child.stdin.end();
+        const message = parseRpcMessage(line);
+        if (message !== undefined) {
+          messages.push(message);
+          if (message.type === "response" && message.id === "create") {
+            receivedResponse = true;
+            child.stdin.end();
+          }
         }
       }
       if (flush && stdoutBuffer) {
-        const message = JSON.parse(
-          stdoutBuffer.endsWith("\r") ? stdoutBuffer.slice(0, -1) : stdoutBuffer
-        ) as RpcMessage;
-        messages.push(message);
+        const message = parseRpcMessage(stdoutBuffer.endsWith("\r") ? stdoutBuffer.slice(0, -1) : stdoutBuffer);
+        if (message !== undefined) messages.push(message);
         stdoutBuffer = "";
       }
     };

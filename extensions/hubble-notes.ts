@@ -29,11 +29,13 @@ import {
   type VaultRoot,
 } from "./hubble-paths.ts";
 
+/** One unique exact-text replacement requested for a note. */
 export interface HubbleEdit {
-  oldText: string;
-  newText: string;
+  readonly oldText: string;
+  readonly newText: string;
 }
 
+/** A vault-contained, canonical note path. */
 export type NoteReference = HubblePath;
 
 /** Turns a note title into a filesystem-safe filename slug. */
@@ -49,17 +51,16 @@ export function slugifyTitle(title: string): string {
 }
 
 /** Validates and applies unique, non-overlapping exact-text replacements. */
-export function applyExactEditsResult(
+export function applyExactEdits(
   content: string,
-  edits: HubbleEdit[],
+  edits: ReadonlyArray<HubbleEdit>,
   path: string
 ): ResultType<string, EditValidationError> {
   if (edits.length === 0)
     return Result.err(new EditValidationError({ path, reason: "empty", message: "At least one edit is required." }));
 
-  const matches: Array<HubbleEdit & { index: number; start: number; end: number }> = [];
-  for (let index = 0; index < edits.length; index++) {
-    const edit = edits[index];
+  const matches: Array<HubbleEdit & { start: number; end: number }> = [];
+  for (const [index, edit] of edits.entries()) {
     if (!edit.oldText) {
       return Result.err(
         new EditValidationError({ path, reason: "empty", message: `edits[${index}].oldText must not be empty.` })
@@ -77,12 +78,13 @@ export function applyExactEditsResult(
         new EditValidationError({ path, reason: "duplicate", message: "An edit's oldText is not unique." })
       );
     }
-    matches.push({ ...edit, index, start: first, end: first + edit.oldText.length });
+    matches.push({ ...edit, start: first, end: first + edit.oldText.length });
   }
 
   const sorted = [...matches].sort((a, b) => a.start - b.start);
-  for (let index = 1; index < sorted.length; index++) {
-    if (sorted[index - 1].end > sorted[index].start) {
+  let previousEnd = -1;
+  for (const current of sorted) {
+    if (previousEnd > current.start) {
       return Result.err(
         new EditValidationError({
           path,
@@ -91,6 +93,7 @@ export function applyExactEditsResult(
         })
       );
     }
+    previousEnd = current.end;
   }
 
   let result = content;
@@ -99,13 +102,6 @@ export function applyExactEditsResult(
   if (result === content)
     return Result.err(new EditValidationError({ path, reason: "no-op", message: "The edits made no changes." }));
   return Result.ok(result);
-}
-
-/** Applies exact edits synchronously and throws when the edit set is invalid. */
-export function applyExactEdits(content: string, edits: HubbleEdit[], path: string): string {
-  const result = applyExactEditsResult(content, edits, path);
-  if (Result.isError(result)) throw result.error;
-  return result.value;
 }
 
 /** Maps a filesystem read failure to the appropriate public note error. */
@@ -201,8 +197,8 @@ async function removeIncompleteNote(
 }
 
 interface CreateNoteDestination {
-  filename?: string;
-  format: HubbleNoteFormat;
+  readonly filename?: string;
+  readonly format: HubbleNoteFormat;
 }
 
 /** Validates an optional exact filename and resolves the document format used during creation. */
@@ -396,7 +392,7 @@ export async function writeNewVaultFile(
         return Result.isError(removed) ? removed : closed;
       }
 
-      return Result.ok({ absolute, relative: relativePath });
+      return Result.ok(target.value);
     }
     return Result.err(
       new NoteWriteError({
@@ -562,7 +558,7 @@ async function replaceVaultFileAtomically(
  */
 export async function editVaultFile(
   path: HubblePath,
-  edits: HubbleEdit[],
+  edits: ReadonlyArray<HubbleEdit>,
   signal?: AbortSignal
 ): Promise<ResultType<void, EditNoteError>> {
   return withFileMutationQueue(path.absolute, async () => {
@@ -589,12 +585,20 @@ export async function editVaultFile(
       oldText: normalizeToLf(edit.oldText),
       newText: normalizeToLf(edit.newText),
     }));
-    const next = applyExactEditsResult(normalizedContent, normalizedEdits, path.relative);
+    const next = applyExactEdits(normalizedContent, normalizedEdits, path.relative);
     if (Result.isError(next)) return next;
     throwIfAborted(signal);
 
     return replaceVaultFileAtomically(path, bom + restoreLineEndings(next.value, lineEnding), signal);
   });
+}
+
+/** Constructs a contained note reference discovered by the symlink-ignoring vault walk. */
+function discoveredNoteReference(vault: VaultRoot, absolute: string): NoteReference {
+  const relativePath = relative(vault.root, absolute).split(sep).join("/");
+  // SAFETY: listNoteFiles starts at the nominal canonical vault root, descends only real directories, and ignores
+  // symbolic links. The discovered absolute path therefore remains inside the vault.
+  return { absolute, relative: relativePath } as NoteReference;
 }
 
 /** Recursively discovers supported Hubble notes while ignoring symlinks. */
@@ -622,7 +626,7 @@ export async function listNoteFiles(vault: VaultRoot): Promise<ResultType<NoteRe
         const visited = await visit(absolute);
         if (Result.isError(visited)) return visited;
       } else if (entry.isFile() && isNotePath(entry.name)) {
-        files.push({ absolute, relative: relative(vault.root, absolute).split(sep).join("/") });
+        files.push(discoveredNoteReference(vault, absolute));
       }
     }
 

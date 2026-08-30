@@ -20,41 +20,51 @@ import {
   canonicalVaultRoot,
   type HubbleNoteFormat,
   resolveVaultPath,
-  type VaultRoot,
+  VaultRoot,
 } from "./hubble-paths.ts";
 
 export type { HubbleEdit, NoteReference } from "./hubble-notes.ts";
 
+/** A note and its UTF-8 contents read from the vault. */
 export interface ReadNote {
-  note: NoteReference;
-  content: string;
+  readonly note: NoteReference;
+  readonly content: string;
 }
 
+/** One line containing a case-insensitive search match. */
 export interface NoteSearchMatch {
-  line: number;
-  text: string;
+  readonly line: number;
+  readonly text: string;
 }
 
+/** All matching lines found in one note. */
 export interface NoteSearchResult {
-  note: NoteReference;
-  matches: NoteSearchMatch[];
+  readonly note: NoteReference;
+  readonly matches: ReadonlyArray<NoteSearchMatch>;
 }
 
+/** Result of resolving, validating, and reading one note. */
 export type VaultReadResult = ResultType<ReadNote, VaultNoteError>;
+/** Result of searching every supported note. */
 export type VaultSearchResult = ResultType<NoteSearchResult[], DiscoveryError | VaultNoteError | NoteValidationError>;
+/** Result of creating one note without overwriting an existing file. */
 export type VaultCreateResult = ResultType<NoteReference, CreateNoteError>;
+/** Result of atomically editing one existing note. */
 export type VaultEditResult = ResultType<NoteReference, EditNoteError | VaultNoteError>;
+/** Result of recursively listing supported notes. */
 export type VaultListResult = ResultType<NoteReference[], DiscoveryError>;
 
 /**
  * The high-level Hubble seam. Path security, note-format validation, and
  * storage are deliberately hidden behind this small constructed interface.
  */
-export class Vault implements VaultRoot {
+export class Vault extends VaultRoot {
+  /** Canonical filesystem root used by this vault. */
   readonly root: string;
 
   /** Creates a Vault around an already canonicalized root. */
   private constructor(root: string) {
+    super();
     this.root = root;
   }
 
@@ -127,7 +137,7 @@ export class Vault implements VaultRoot {
    * Applies exact-text edits to one validated supported note.
    * Returns structured path, read, validation, or atomic-write failures.
    */
-  async edit(path: string, edits: HubbleEdit[], signal?: AbortSignal): Promise<VaultEditResult> {
+  async edit(path: string, edits: ReadonlyArray<HubbleEdit>, signal?: AbortSignal): Promise<VaultEditResult> {
     const resolved = await resolveVaultPath(this, path);
     if (Result.isError(resolved)) return resolved;
 

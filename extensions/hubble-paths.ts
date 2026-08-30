@@ -10,18 +10,32 @@ import {
   type VaultPathReason,
 } from "./hubble-errors.ts";
 
+/** A supported Hubble note serialization format. */
 export type HubbleNoteFormat = "markdown" | "html";
 
+declare const hubblePathBrand: unique symbol;
+
+/** A canonical path proven to remain inside its Hubble vault. */
 export interface HubblePath {
-  absolute: string;
-  relative: string;
+  readonly absolute: string;
+  readonly relative: string;
+  readonly [hubblePathBrand]: true;
 }
 
-export interface VaultRoot {
-  root: string;
+/** Nominal base for canonical vault roots accepted by low-level storage operations. */
+export abstract class VaultRoot {
+  private declare readonly vaultRootBrand: undefined;
+  abstract readonly root: string;
 }
 
+/** A resolved vault path or a structured path-safety failure. */
 export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
+
+/** Constructs a path only after its absolute and relative forms have passed containment checks. */
+function containedPath(absolute: string, relativePath: string): HubblePath {
+  // SAFETY: This module calls containedPath only after canonical containment and symlink checks succeed.
+  return { absolute, relative: relativePath } as HubblePath;
+}
 
 /** Reports whether a candidate path remains inside the canonical vault root. */
 function isInside(root: string, candidate: string): boolean {
@@ -190,7 +204,7 @@ async function resolveContained(
   const normalized = policy === "note" && userPath.startsWith("@") ? userPath.slice(1) : userPath.trim();
   if (!normalized) {
     return policy === "folder"
-      ? Result.ok({ absolute: vault.root, relative: "" })
+      ? Result.ok(containedPath(vault.root, ""))
       : Result.err(pathError(normalized, "empty", "Hubble path must not be empty."));
   }
 
@@ -247,7 +261,7 @@ async function resolveContained(
   }
 
   const canonical = Result.isOk(resolvedTarget) ? resolvedTarget.value : absolute;
-  return Result.ok({ absolute: canonical, relative: relative(vault.root, canonical).split(sep).join("/") });
+  return Result.ok(containedPath(canonical, relative(vault.root, canonical).split(sep).join("/")));
 }
 
 /** Resolves a user-supplied note path relative to the vault. */

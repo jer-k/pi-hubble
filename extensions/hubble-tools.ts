@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -20,12 +20,14 @@ import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./
 import { buildNewNoteDocument } from "./hubble-notes.ts";
 import type { NoteSearchResult } from "./hubble-vault.ts";
 
+/** Tool output after applying Pi's context-size limits. */
 export interface TruncatedOutput {
-  text: string;
-  truncated: boolean;
-  fullOutputPath?: string;
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly fullOutputPath?: string;
 }
 
+/** Public parameter schema for Hubble note search. */
 export const SearchParameters = Type.Object({
   query: Type.String({ description: "Case-insensitive text to find in Hubble notes" }),
   limit: Type.Optional(
@@ -82,25 +84,44 @@ type HubbleEditArguments = Static<typeof EditParameters>;
 
 const CREATE_PREVIEW_LINES = 10;
 
+interface UnpreparedHubbleEditArguments {
+  readonly edits?: unknown;
+  readonly oldText?: unknown;
+  readonly newText?: unknown;
+}
+
+/** Narrows unknown model output to the fields handled before schema validation. */
+function isUnpreparedHubbleEditArguments(input: unknown): input is UnpreparedHubbleEditArguments {
+  return typeof input === "object" && input !== null;
+}
+
+/** Passes prepared arguments to Pi's mandatory post-prepare Typebox validation. */
+function deferToSchemaValidation(input: unknown): HubbleEditArguments {
+  // SAFETY: Pi always validates prepareArguments output against EditParameters before execute runs. Invalid model
+  // output must be returned unchanged so that boundary validation, rather than this compatibility shim, reports it.
+  return input as HubbleEditArguments;
+}
+
 /** Normalizes model-generated edit arguments before Typebox validates the public schema. */
 function prepareHubbleEditArguments(input: unknown): HubbleEditArguments {
-  if (!input || typeof input !== "object") return input as HubbleEditArguments;
+  if (!isUnpreparedHubbleEditArguments(input)) return deferToSchemaValidation(input);
 
-  const args = input as Record<string, unknown>;
+  const args = { ...input };
   if (typeof args.edits === "string") {
+    const serializedEdits = args.edits;
     const parsed = Result.try({
-      try: () => JSON.parse(args.edits as string) as unknown,
+      try: (): unknown => JSON.parse(serializedEdits),
       catch: () => undefined,
     });
     if (Result.isOk(parsed) && Array.isArray(parsed.value)) args.edits = parsed.value;
   }
 
-  if (typeof args.oldText !== "string" || typeof args.newText !== "string") return args as HubbleEditArguments;
+  if (typeof args.oldText !== "string" || typeof args.newText !== "string") return deferToSchemaValidation(args);
 
   const edits = Array.isArray(args.edits) ? [...args.edits] : [];
   edits.push({ oldText: args.oldText, newText: args.newText });
   const { oldText: _oldText, newText: _newText, ...rest } = args;
-  return { ...rest, edits } as HubbleEditArguments;
+  return deferToSchemaValidation({ ...rest, edits });
 }
 
 /** Returns a successful Result value or raises its Hubble failure for the tool API. */
@@ -114,8 +135,8 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
 }
 
-/** Shapes text and metadata into the response format used by Hubble tools. */
-function noteResult(text: string, details: Record<string, unknown> = {}) {
+/** Shapes text and typed metadata into the response format used by Hubble tools. */
+function noteResult<TDetails extends object>(text: string, details: TDetails): AgentToolResult<TDetails> {
   return { content: [{ type: "text" as const, text }], details };
 }
 
@@ -260,8 +281,8 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     },
     /** Renders the generated document with syntax highlighting and expandable content. */
     renderCall(args, theme, context) {
-      const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
-      const partialArgs = args as Partial<HubbleCreateArguments>;
+      const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+      const partialArgs: Partial<HubbleCreateArguments> = args;
       const title = typeof partialArgs.title === "string" ? partialArgs.title : "";
       const content = typeof partialArgs.content === "string" ? partialArgs.content : undefined;
       const filename = typeof partialArgs.filename === "string" ? partialArgs.filename : "";
@@ -290,7 +311,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     },
     /** Renders the resolved note path after success or the structured tool error after failure. */
     renderResult(result, _options, theme, context) {
-      const component = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
       if (context.isError) {
         const message = result.content
           .filter((item) => item.type === "text")

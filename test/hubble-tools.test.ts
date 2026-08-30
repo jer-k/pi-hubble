@@ -19,6 +19,9 @@ type RegisteredTestTool = {
   renderResult?: unknown;
 };
 
+type HubbleToolName = "hubble_search" | "hubble_read" | "hubble_create" | "hubble_edit";
+type RegisteredHubbleTools = Readonly<Record<HubbleToolName, RegisteredTestTool>>;
+
 type RenderComponent = { render(width: number): string[] };
 type RenderTheme = {
   fg(_color: string, text: string): string;
@@ -30,11 +33,19 @@ type RenderContext = {
   lastComponent: RenderComponent | undefined;
 };
 
-function register(getVault: GetVault) {
-  const tools: Record<string, RegisteredTestTool> = {};
+type HubbleCreateRenderArguments = {
+  readonly title?: string;
+  readonly content?: string;
+  readonly filename?: string;
+  readonly folder?: string;
+  readonly format?: "markdown" | "html";
+};
+
+function register(getVault: GetVault): RegisteredHubbleTools {
+  const tools: Partial<Record<HubbleToolName, RegisteredTestTool>> = {};
   const pi = {
     registerTool(tool: {
-      name: string;
+      name: HubbleToolName;
       execute: ToolExecutor;
       prepareArguments?: (input: unknown) => unknown;
       renderCall?: unknown;
@@ -44,7 +55,18 @@ function register(getVault: GetVault) {
     },
   };
   registerHubbleTools(pi as unknown as ExtensionAPI, getVault);
-  return tools;
+
+  const registeredTool = (name: HubbleToolName): RegisteredTestTool => {
+    const tool = tools[name];
+    if (tool === undefined) throw new Error(`${name} was not registered`);
+    return tool;
+  };
+  return {
+    hubble_search: registeredTool("hubble_search"),
+    hubble_read: registeredTool("hubble_read"),
+    hubble_create: registeredTool("hubble_create"),
+    hubble_edit: registeredTool("hubble_edit"),
+  };
 }
 
 const context = { cwd: process.cwd(), isProjectTrusted: () => true };
@@ -70,7 +92,7 @@ test("executes create, read, edit, and search tools", async () => {
     undefined,
     context
   );
-  expect(created.content[0].text).toBe("Created Hubble note: first-note.md");
+  expect(created.content.at(0)?.text).toBe("Created Hubble note: first-note.md");
   const path = join(root, "first-note.md");
   expect(await readFile(path, "utf8")).toBe("# First Note\n\nAlpha\nBeta");
 
@@ -81,7 +103,7 @@ test("executes create, read, edit, and search tools", async () => {
     undefined,
     context
   );
-  expect(read.content[0].text).toContain("Path: first-note.md\n\nAlpha");
+  expect(read.content.at(0)?.text).toContain("Path: first-note.md\n\nAlpha");
   expect(read.details).toMatchObject({ path: "first-note.md", startLine: 3, returnedLines: 1 });
 
   const edited = await tools.hubble_edit.execute(
@@ -107,7 +129,7 @@ test("executes create, read, edit, and search tools", async () => {
     undefined,
     context
   );
-  expect(search.content[0].text).toContain("first-note.md:3: Updated");
+  expect(search.content.at(0)?.text).toContain("first-note.md:3: Updated");
   expect(search.details).toMatchObject({ query: "updated", matchCount: 1, truncated: false });
 });
 
@@ -116,7 +138,7 @@ test("renders expandable Markdown and HTML create previews with resolved success
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-render-"));
   const tools = register(async () => openVault(root));
   const renderCall = tools.hubble_create.renderCall as (
-    args: Record<string, unknown>,
+    args: HubbleCreateRenderArguments,
     theme: RenderTheme,
     context: RenderContext
   ) => RenderComponent;
@@ -218,7 +240,7 @@ test("creates, reads, edits, and searches HTML through tools", async () => {
     undefined,
     context
   );
-  expect(created.content[0].text).toBe("Created Hubble note: web/custom-tools.html");
+  expect(created.content.at(0)?.text).toBe("Created Hubble note: web/custom-tools.html");
   const path = join(root, "web", "custom-tools.html");
   expect(await readFile(path, "utf8")).toContain("<title>HTML &amp; Tools</title>");
 
@@ -229,8 +251,8 @@ test("creates, reads, edits, and searches HTML through tools", async () => {
     undefined,
     context
   );
-  expect(read.content[0].text).toContain("Path: web/custom-tools.html");
-  expect(read.content[0].text).toContain("<p>Alpha</p>");
+  expect(read.content.at(0)?.text).toContain("Path: web/custom-tools.html");
+  expect(read.content.at(0)?.text).toContain("<p>Alpha</p>");
 
   await tools.hubble_edit.execute(
     "edit-html",
@@ -246,7 +268,7 @@ test("creates, reads, edits, and searches HTML through tools", async () => {
     undefined,
     context
   );
-  expect(search.content[0].text).toContain("web/custom-tools.html:9: <p>Updated</p>");
+  expect(search.content.at(0)?.text).toContain("web/custom-tools.html:9: <p>Updated</p>");
 });
 
 test("reports validation failures and honors cancellation", async () => {
