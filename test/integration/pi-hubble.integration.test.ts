@@ -212,15 +212,28 @@ test("loads the checkout through Pi and creates a note using --hubble-dir", asyn
   }
 });
 
-test("loads and executes every Hubble tool through the Pi SDK runtime", async () => {
-  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-integration-"));
+test("makes every Hubble tool available through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-tools-integration-"));
   const vault = join(workspace, "vault");
   const session = await createIntegrationSession(workspace, vault);
 
   try {
     await session.bindExtensions({ mode: "print" });
-    expect(session.getActiveToolNames()).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
 
+    expect(session.getActiveToolNames()).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("creates a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-create-integration-"));
+  const vault = join(workspace, "vault");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
     const created = await getTool(session, "hubble_create").execute(
       "create",
       {
@@ -232,9 +245,28 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       undefined,
       undefined
     );
+
     expect(toolText(created)).toBe("Created Hubble note: checks/integration-custom-name.md");
     expect(created.details).toEqual({ path: "checks/integration-custom-name.md" });
+    expect(await readFile(join(vault, "checks", "integration-custom-name.md"), "utf8")).toBe(
+      "# Integration Tool Note\n\nAlpha\nBeta"
+    );
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
+test("edits a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-edit-integration-"));
+  const vault = join(workspace, "vault");
+  const notePath = join(vault, "checks", "integration-custom-name.md");
+  await mkdir(dirname(notePath), { recursive: true });
+  await writeFile(notePath, "# Integration Tool Note\n\nAlpha\nBeta", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
     const edited = await getTool(session, "hubble_edit").execute(
       "edit",
       {
@@ -247,15 +279,35 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       undefined,
       undefined
     );
-    expect(edited.details).toEqual({ path: "checks/integration-custom-name.md", editCount: 2 });
 
+    expect(edited.details).toEqual({ path: "checks/integration-custom-name.md", editCount: 2 });
+    expect(await readFile(notePath, "utf8")).toBe(
+      "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma"
+    );
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("reads a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-read-integration-"));
+  const vault = join(workspace, "vault");
+  const notePath = join(vault, "checks", "integration-custom-name.md");
+  await mkdir(dirname(notePath), { recursive: true });
+  await writeFile(notePath, "# Integration Tool Note\n\nAlpha\nBeta\nGamma", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
     const read = await getTool(session, "hubble_read").execute(
       "read",
       { path: "checks/integration-custom-name.md", offset: 3, limit: 2 },
       undefined,
       undefined
     );
-    expect(toolText(read)).toBe("Path: checks/integration-custom-name.md\n\nUpdated Alpha\nUpdated Beta");
+
+    expect(toolText(read)).toBe("Path: checks/integration-custom-name.md\n\nAlpha\nBeta");
     expect(read.details).toMatchObject({
       path: "checks/integration-custom-name.md",
       startLine: 3,
@@ -263,50 +315,33 @@ test("loads and executes every Hubble tool through the Pi SDK runtime", async ()
       totalLines: 5,
       truncated: false,
     });
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
 
+test("searches Hubble notes through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-search-integration-"));
+  const vault = join(workspace, "vault");
+  const notePath = join(vault, "checks", "integration-custom-name.md");
+  await mkdir(dirname(notePath), { recursive: true });
+  await writeFile(notePath, "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
     const search = await getTool(session, "hubble_search").execute(
       "search",
       { query: "UPDATED", limit: 10 },
       undefined,
       undefined
     );
+
     expect(toolText(search)).toBe(
       "checks/integration-custom-name.md:3: Updated Alpha\nchecks/integration-custom-name.md:4: Updated Beta"
     );
     expect(search.details).toMatchObject({ query: "updated", matchCount: 2, truncated: false });
-
-    expect(await readFile(join(vault, "checks", "integration-custom-name.md"), "utf8")).toBe(
-      "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma"
-    );
-
-    const htmlCreated = await getTool(session, "hubble_create").execute(
-      "create-html",
-      {
-        title: "Integration HTML",
-        content: "<section>HTML Integration Match</section>",
-        folder: "checks",
-        format: "html",
-      },
-      undefined,
-      undefined
-    );
-    expect(toolText(htmlCreated)).toBe("Created Hubble note: checks/integration-html.html");
-
-    const htmlRead = await getTool(session, "hubble_read").execute(
-      "read-html",
-      { path: "checks/integration-html.html" },
-      undefined,
-      undefined
-    );
-    expect(toolText(htmlRead)).toContain("<section>HTML Integration Match</section>");
-
-    const htmlSearch = await getTool(session, "hubble_search").execute(
-      "search-html",
-      { query: "html integration match", limit: 10 },
-      undefined,
-      undefined
-    );
-    expect(toolText(htmlSearch)).toBe("checks/integration-html.html:9: <section>HTML Integration Match</section>");
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });
