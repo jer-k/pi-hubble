@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result } from "better-result";
+
 import type { GetVault } from "./hubble-config.ts";
 import { attachmentValue } from "./hubble-ui.ts";
 import type { NoteReference } from "./hubble-vault.ts";

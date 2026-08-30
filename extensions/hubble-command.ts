@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result, type Result as ResultType } from "better-result";
+
 import type { GetVault } from "./hubble-config.ts";
 import type { HubbleFailure } from "./hubble-errors.ts";
 import type { HubbleNoteFormat } from "./hubble-paths.ts";
@@ -51,8 +52,13 @@ interface NewCommandSelection {
   readonly format?: string;
 }
 
+interface ExtractedValueFlag {
+  readonly remainder: string;
+  readonly value?: string;
+}
+
 /** Removes one named value flag from command text and returns its value. */
-function extractValueFlag(remainder: string, name: string): { remainder: string; value?: string } {
+function extractValueFlag(remainder: string, name: string): ExtractedValueFlag {
   const flag = remainder.match(new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|(\\S+))`, "u"));
   if (flag?.index === undefined) return { remainder };
 
@@ -69,11 +75,16 @@ function parseNewCommand(args: string): NewCommandSelection | undefined {
 
   const folder = extractValueFlag(match[1]?.trim() ?? "", "folder");
   const format = extractValueFlag(folder.remainder, "format");
-  return {
-    title: unquote(format.remainder),
-    ...(folder.value === undefined ? {} : { folder: folder.value }),
-    ...(format.value === undefined ? {} : { format: format.value }),
-  };
+  const title = unquote(format.remainder);
+  const folderValue = folder.value;
+  const formatValue = format.value;
+  if (folderValue === undefined && formatValue === undefined) return { title };
+  if (folderValue === undefined && formatValue !== undefined) return { title, format: formatValue };
+  if (formatValue === undefined && folderValue !== undefined) return { title, folder: folderValue };
+  if (folderValue !== undefined && formatValue !== undefined) {
+    return { title, folder: folderValue, format: formatValue };
+  }
+  throw new Error("Hubble new-command option parsing reached an impossible state.");
 }
 
 /** Narrows a command-line value to a supported Hubble creation format. */

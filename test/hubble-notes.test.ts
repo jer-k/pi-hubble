@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+
 import { applyExactEdits } from "../extensions/hubble-notes.ts";
 
 test("applies disjoint exact edits against the original content", () => {

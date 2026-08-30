@@ -1,45 +1,57 @@
+import * as actualFs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, expect, test, vi } from "vitest";
-
-const fsMocks = vi.hoisted(() => ({
-  mkdtemp: vi.fn(),
-  open: vi.fn(),
-  readFile: vi.fn(),
-  rename: vi.fn(),
-  unlink: vi.fn(),
-  writeFile: vi.fn(),
-}));
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, ...fsMocks };
-});
 
 import { Result } from "better-result";
-import { openVault } from "../extensions/hubble-vault.ts";
-import { truncateOutput } from "../extensions/hubble-tools.ts";
+import { beforeEach, expect, test, vi } from "vitest";
 
-const actualFs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+import type { NoteFileHandle, NoteFileSystem } from "../extensions/hubble-notes.ts";
+import { type OutputFileSystem, truncateOutput } from "../extensions/hubble-tools.ts";
+import { openVault } from "../extensions/hubble-vault.ts";
+
+const fsMocks = {
+  mkdtemp: vi.fn((prefix: string) => actualFs.mkdtemp(prefix)),
+  open: vi.fn((path: string, flags: "wx", mode?: number): Promise<NoteFileHandle> => actualFs.open(path, flags, mode)),
+  readFile: vi.fn((path: string, encoding: "utf8") => actualFs.readFile(path, encoding)),
+  rename: vi.fn((oldPath: string, newPath: string) => actualFs.rename(oldPath, newPath)),
+  unlink: vi.fn((path: string) => actualFs.unlink(path)),
+  writeFile: vi.fn((path: string, data: string, encoding: "utf8") => actualFs.writeFile(path, data, encoding)),
+};
+
+const noteFileSystem = {
+  access: actualFs.access,
+  mkdir: actualFs.mkdir,
+  open: fsMocks.open,
+  readdir: actualFs.readdir,
+  readFile: fsMocks.readFile,
+  rename: fsMocks.rename,
+  stat: actualFs.stat,
+  unlink: fsMocks.unlink,
+} satisfies NoteFileSystem;
+
+const outputFileSystem = {
+  mkdtemp: fsMocks.mkdtemp,
+  writeFile: fsMocks.writeFile,
+} satisfies OutputFileSystem;
 
 function systemError(message: string, code: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 
 async function vaultAt(root: string) {
-  const result = await openVault(root);
+  const result = await openVault(root, noteFileSystem);
   if (Result.isError(result)) throw result.error;
   return result.value;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  fsMocks.mkdtemp.mockImplementation(actualFs.mkdtemp);
-  fsMocks.open.mockImplementation(actualFs.open);
-  fsMocks.readFile.mockImplementation(actualFs.readFile);
-  fsMocks.rename.mockImplementation(actualFs.rename);
-  fsMocks.unlink.mockImplementation(actualFs.unlink);
-  fsMocks.writeFile.mockImplementation(actualFs.writeFile);
+  fsMocks.mkdtemp.mockImplementation((prefix) => actualFs.mkdtemp(prefix));
+  fsMocks.open.mockImplementation((path, flags, mode) => actualFs.open(path, flags, mode));
+  fsMocks.readFile.mockImplementation((path, encoding) => actualFs.readFile(path, encoding));
+  fsMocks.rename.mockImplementation((oldPath, newPath) => actualFs.rename(oldPath, newPath));
+  fsMocks.unlink.mockImplementation((path) => actualFs.unlink(path));
+  fsMocks.writeFile.mockImplementation((path, data, encoding) => actualFs.writeFile(path, data, encoding));
 });
 
 test("classifies HTML create open failures through Vault.create", async () => {
@@ -62,10 +74,15 @@ test("closes the create handle and removes the incomplete note after a write fai
   const cause = systemError("disk full", "ENOSPC");
   const writeFile = vi.fn().mockRejectedValue(cause);
   const close = vi.fn();
-  fsMocks.open.mockImplementationOnce(async (path: string, flags: string) => {
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: "wx"): Promise<NoteFileHandle> => {
     const handle = await actualFs.open(path, flags);
     close.mockImplementation(() => handle.close());
-    return { close, writeFile };
+    return {
+      chmod: handle.chmod.bind(handle),
+      close,
+      sync: handle.sync.bind(handle),
+      writeFile,
+    };
   });
 
   const result = await vault.create("Write Failure", "body");
@@ -82,7 +99,12 @@ test("preserves creation and cleanup failures when an incomplete note cannot be 
   const writeCause = systemError("disk full", "ENOSPC");
   const cleanupCause = systemError("cleanup denied", "EACCES");
   const close = vi.fn().mockResolvedValue(undefined);
-  fsMocks.open.mockResolvedValueOnce({ close, writeFile: vi.fn().mockRejectedValue(writeCause) });
+  fsMocks.open.mockResolvedValueOnce({
+    chmod: vi.fn(),
+    close,
+    sync: vi.fn(),
+    writeFile: vi.fn().mockRejectedValue(writeCause),
+  });
   fsMocks.unlink.mockRejectedValueOnce(cleanupCause);
 
   const result = await vault.create("Cleanup Failure", "body");
@@ -92,7 +114,9 @@ test("preserves creation and cleanup failures when an incomplete note cannot be 
     expect(result.error._tag).toBe("NoteWriteError");
     if (result.error._tag === "NoteWriteError") {
       expect(result.error.cause).toBeInstanceOf(AggregateError);
-      const causes = (result.error.cause as AggregateError).errors;
+      const aggregate = result.error.cause;
+      if (!(aggregate instanceof AggregateError)) throw new Error("Expected aggregate creation and cleanup failures");
+      const causes = aggregate.errors;
       expect(causes[0]).toMatchObject({ _tag: "NoteWriteError", cause: writeCause });
       expect(causes[1]).toBe(cleanupCause);
     }
@@ -111,9 +135,9 @@ test("maps Vault read and atomic edit I/O failures without changing the note", a
   expect(read.status).toBe("error");
   if (read.status === "error" && read.error._tag === "NoteReadError") expect(read.error.cause).toBe(readCause);
 
-  fsMocks.readFile.mockImplementation(actualFs.readFile);
+  fsMocks.readFile.mockImplementation((path, encoding) => actualFs.readFile(path, encoding));
   const editCause = systemError("disk full", "ENOSPC");
-  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: "wx", mode?: number): Promise<NoteFileHandle> => {
     const handle = await actualFs.open(path, flags, mode);
     return {
       chmod: handle.chmod.bind(handle),
@@ -137,7 +161,7 @@ test("preserves atomic edit and temporary-file cleanup failures", async () => {
   if (created.status === "error") throw created.error;
   const writeCause = systemError("disk full", "ENOSPC");
   const cleanupCause = systemError("cleanup denied", "EACCES");
-  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: "wx", mode?: number): Promise<NoteFileHandle> => {
     const handle = await actualFs.open(path, flags, mode);
     return {
       chmod: handle.chmod.bind(handle),
@@ -153,7 +177,9 @@ test("preserves atomic edit and temporary-file cleanup failures", async () => {
   expect(edit.status).toBe("error");
   if (edit.status === "error" && edit.error._tag === "NoteWriteError") {
     expect(edit.error.cause).toBeInstanceOf(AggregateError);
-    const causes = (edit.error.cause as AggregateError).errors;
+    const aggregate = edit.error.cause;
+    if (!(aggregate instanceof AggregateError)) throw new Error("Expected aggregate edit and cleanup failures");
+    const causes = aggregate.errors;
     expect(causes[0]).toMatchObject({ _tag: "NoteWriteError", cause: writeCause });
     expect(causes[1]).toBe(cleanupCause);
   }
@@ -182,7 +208,7 @@ test("cancels an atomic edit before rename and removes its temporary file", asyn
   const created = await vault.create("Cancel Note", "old");
   if (created.status === "error") throw created.error;
   const controller = new AbortController();
-  fsMocks.open.mockImplementationOnce(async (path: string, flags: string, mode?: number) => {
+  fsMocks.open.mockImplementationOnce(async (path: string, flags: "wx", mode?: number): Promise<NoteFileHandle> => {
     const handle = await actualFs.open(path, flags, mode);
     return {
       chmod: handle.chmod.bind(handle),
@@ -205,13 +231,13 @@ test("cancels an atomic edit before rename and removes its temporary file", asyn
 test("fails safely when truncated output cannot be persisted", async () => {
   const cause = systemError("temporary directory unavailable", "EACCES");
   fsMocks.mkdtemp.mockRejectedValueOnce(cause);
-  const result = await truncateOutput("line\n".repeat(3_000));
+  const result = await truncateOutput("line\n".repeat(3_000), outputFileSystem);
   expect(result.status).toBe("error");
   if (result.status === "error") expect(result.error.cause).toBe(cause);
 
-  fsMocks.mkdtemp.mockImplementation(actualFs.mkdtemp);
+  fsMocks.mkdtemp.mockImplementation((prefix) => actualFs.mkdtemp(prefix));
   fsMocks.writeFile.mockRejectedValueOnce(systemError("temporary write failed", "ENOSPC"));
-  const persisted = await truncateOutput("line\n".repeat(3_000));
+  const persisted = await truncateOutput("line\n".repeat(3_000), outputFileSystem);
   expect(persisted.status).toBe("error");
   if (persisted.status === "error") expect(persisted.error._tag).toBe("OutputPersistenceError");
 });

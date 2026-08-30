@@ -1,4 +1,5 @@
 import { Result, type Result as ResultType } from "better-result";
+
 import {
   type CreateNoteError,
   type DiscoveryError,
@@ -11,6 +12,7 @@ import {
   editVaultFile,
   type HubbleEdit,
   listNoteFiles,
+  type NoteFileSystem,
   type NoteReference,
   readVaultFile,
   writeNewVaultFile,
@@ -62,21 +64,25 @@ export class Vault extends VaultRoot {
   /** Canonical filesystem root used by this vault. */
   readonly root: string;
 
+  /** Filesystem adapter used for note storage after path resolution. */
+  private readonly fileSystem: NoteFileSystem | undefined;
+
   /** Creates a Vault around an already canonicalized root. */
-  private constructor(root: string) {
+  private constructor(root: string, fileSystem: NoteFileSystem | undefined) {
     super();
     this.root = root;
+    this.fileSystem = fileSystem;
   }
 
   /** Opens and canonicalizes a vault root before exposing vault operations. */
-  static async open(root: string): Promise<ResultType<Vault, VaultOpenErrorType>> {
+  static async open(root: string, fileSystem?: NoteFileSystem): Promise<ResultType<Vault, VaultOpenErrorType>> {
     const resolved = await canonicalVaultRoot(root);
-    return Result.isError(resolved) ? resolved : Result.ok(new Vault(resolved.value));
+    return Result.isError(resolved) ? resolved : Result.ok(new Vault(resolved.value, fileSystem));
   }
 
   /** Lists all supported notes currently stored in the vault. */
   async list(): Promise<VaultListResult> {
-    return listNoteFiles(this);
+    return listNoteFiles(this, this.fileSystem);
   }
 
   /** Searches every supported note's raw text for case-insensitive line matches. */
@@ -113,7 +119,7 @@ export class Vault extends VaultRoot {
     const supported = assertNotePath(resolved.value);
     if (Result.isError(supported)) return supported;
 
-    const content = await readVaultFile(resolved.value);
+    const content = await readVaultFile(resolved.value, this.fileSystem);
     if (Result.isError(content)) return content;
 
     return Result.ok({ note: resolved.value, content: content.value });
@@ -130,7 +136,7 @@ export class Vault extends VaultRoot {
     format?: HubbleNoteFormat,
     filename?: string
   ): Promise<VaultCreateResult> {
-    return writeNewVaultFile(this, title, content, folder, format, filename);
+    return writeNewVaultFile(this, title, content, folder, format, filename, this.fileSystem);
   }
 
   /**
@@ -144,7 +150,7 @@ export class Vault extends VaultRoot {
     const supported = assertNotePath(resolved.value);
     if (Result.isError(supported)) return supported;
 
-    const edited = await editVaultFile(resolved.value, edits, signal);
+    const edited = await editVaultFile(resolved.value, edits, signal, this.fileSystem);
     if (Result.isError(edited)) return edited;
 
     return Result.ok(resolved.value);
@@ -152,6 +158,6 @@ export class Vault extends VaultRoot {
 }
 
 /** Opens a Hubble vault through the high-level Vault interface. */
-export function openVault(root: string): Promise<ResultType<Vault, VaultOpenErrorType>> {
-  return Vault.open(root);
+export function openVault(root: string, fileSystem?: NoteFileSystem): Promise<ResultType<Vault, VaultOpenErrorType>> {
+  return Vault.open(root, fileSystem);
 }

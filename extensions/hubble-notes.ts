@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { constants, type Dirent, type Stats } from "node:fs";
+import * as nodeFileSystem from "node:fs/promises";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
+
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
+
 import {
   type CreateNoteResult,
   type DiscoveryError,
@@ -28,6 +30,26 @@ import {
   resolveVaultPath,
   type VaultRoot,
 } from "./hubble-paths.ts";
+
+/** Open note handle operations required by creation and atomic editing. */
+export interface NoteFileHandle {
+  chmod(mode: number): Promise<void>;
+  close(): Promise<void>;
+  sync(): Promise<void>;
+  writeFile(data: string, encoding: "utf8"): Promise<void>;
+}
+
+/** Filesystem operations used by note storage and injectable in failure-path tests. */
+export interface NoteFileSystem {
+  access(path: string, mode: number): Promise<void>;
+  mkdir(path: string, options: { readonly recursive: true }): Promise<string | undefined>;
+  open(path: string, flags: "wx", mode?: number): Promise<NoteFileHandle>;
+  readdir(path: string, options: { readonly withFileTypes: true }): Promise<Dirent[]>;
+  readFile(path: string, encoding: "utf8"): Promise<string>;
+  rename(oldPath: string, newPath: string): Promise<void>;
+  stat(path: string): Promise<Stats>;
+  unlink(path: string): Promise<void>;
+}
 
 /** One unique exact-text replacement requested for a note. */
 export interface HubbleEdit {
@@ -117,14 +139,17 @@ function noteReadError(path: HubblePath, cause: unknown): NoteNotFoundError | No
 }
 
 /** Reads one validated vault file while distinguishing missing and unreadable notes. */
-export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
+export async function readVaultFile(
+  path: HubblePath,
+  fileSystem: NoteFileSystem = nodeFileSystem
+): Promise<NoteReadResult> {
   const accessible = await Result.tryPromise({
-    try: () => access(path.absolute, constants.R_OK),
+    try: () => fileSystem.access(path.absolute, constants.R_OK),
     catch: (cause) => noteReadError(path, cause),
   });
   if (Result.isError(accessible)) return accessible;
   const fileStat = await Result.tryPromise({
-    try: () => stat(path.absolute),
+    try: () => fileSystem.stat(path.absolute),
     catch: (cause) => noteReadError(path, cause),
   });
   if (Result.isError(fileStat)) return fileStat;
@@ -133,7 +158,10 @@ export async function readVaultFile(path: HubblePath): Promise<NoteReadResult> {
       new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." })
     );
   return withFileMutationQueue(path.absolute, () =>
-    Result.tryPromise({ try: () => readFile(path.absolute, "utf8"), catch: (cause) => noteReadError(path, cause) })
+    Result.tryPromise({
+      try: () => fileSystem.readFile(path.absolute, "utf8"),
+      catch: (cause) => noteReadError(path, cause),
+    })
   );
 }
 
@@ -174,10 +202,11 @@ async function removeIncompleteNote(
   absolute: string,
   relativePath: string,
   title: string,
-  creationError: NoteWriteError
+  creationError: NoteWriteError,
+  fileSystem: NoteFileSystem
 ): Promise<ResultType<void, NoteWriteError>> {
   const removed = await Result.tryPromise({
-    try: () => unlink(absolute),
+    try: () => fileSystem.unlink(absolute),
     catch: (cause) => mapFileSystemError(absolute, cause),
   });
   if (Result.isOk(removed) || MissingFileError.is(removed.error)) return Result.ok();
@@ -272,7 +301,8 @@ export async function writeNewVaultFile(
   content: string,
   folder = "",
   format?: HubbleNoteFormat,
-  filename?: string
+  filename?: string,
+  fileSystem: NoteFileSystem = nodeFileSystem
 ): Promise<CreateNoteResult> {
   const trimmedTitle = title.trim();
   if (!trimmedTitle)
@@ -283,7 +313,7 @@ export async function writeNewVaultFile(
 
   return withFileMutationQueue(vault.root, async () => {
     const rootCreated = await Result.tryPromise({
-      try: () => mkdir(vault.root, { recursive: true }),
+      try: () => fileSystem.mkdir(vault.root, { recursive: true }),
       catch: (cause) =>
         new NoteWriteError({
           operation: "create",
@@ -303,7 +333,7 @@ export async function writeNewVaultFile(
     if (Result.isError(directory)) return directory;
 
     const directoryCreated = await Result.tryPromise({
-      try: () => mkdir(directory.value.absolute, { recursive: true }),
+      try: () => fileSystem.mkdir(directory.value.absolute, { recursive: true }),
       catch: (cause) =>
         new NoteWriteError({
           operation: "create",
@@ -333,7 +363,7 @@ export async function writeNewVaultFile(
       const absolute = target.value.absolute;
       const relativePath = target.value.relative;
       const opened = await Result.tryPromise({
-        try: () => open(absolute, "wx"),
+        try: () => fileSystem.open(absolute, "wx"),
         catch: (cause) => {
           const filesystemError = mapFileSystemError(absolute, cause);
           return new NoteWriteError({
@@ -384,11 +414,11 @@ export async function writeNewVaultFile(
       }
 
       if (Result.isError(written)) {
-        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, written.error);
+        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, written.error, fileSystem);
         return Result.isError(removed) ? removed : written;
       }
       if (Result.isError(closed)) {
-        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, closed.error);
+        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, closed.error, fileSystem);
         return Result.isError(removed) ? removed : closed;
       }
 
@@ -441,10 +471,11 @@ function editWriteError(path: HubblePath, filesystemPath: string, cause: unknown
 async function cleanUpFailedEdit(
   path: HubblePath,
   temporaryPath: string,
-  failure: NoteWriteError
+  failure: NoteWriteError,
+  fileSystem: NoteFileSystem
 ): Promise<NoteWriteError> {
   const removed = await Result.tryPromise({
-    try: () => unlink(temporaryPath),
+    try: () => fileSystem.unlink(temporaryPath),
     catch: (cause) => mapFileSystemError(temporaryPath, cause),
   });
   if (Result.isOk(removed) || MissingFileError.is(removed.error)) return failure;
@@ -458,10 +489,15 @@ async function cleanUpFailedEdit(
 }
 
 /** Removes an uncommitted temporary file before propagating cancellation. */
-async function cancelAtomicEdit(path: HubblePath, temporaryPath: string, signal: AbortSignal): Promise<never> {
+async function cancelAtomicEdit(
+  path: HubblePath,
+  temporaryPath: string,
+  signal: AbortSignal,
+  fileSystem: NoteFileSystem
+): Promise<never> {
   const reason = signal.reason ?? new DOMException("The Hubble edit was cancelled.", "AbortError");
   const removed = await Result.tryPromise({
-    try: () => unlink(temporaryPath),
+    try: () => fileSystem.unlink(temporaryPath),
     catch: (cause) => mapFileSystemError(temporaryPath, cause),
   });
   if (Result.isError(removed) && !MissingFileError.is(removed.error)) {
@@ -477,12 +513,13 @@ async function cancelAtomicEdit(path: HubblePath, temporaryPath: string, signal:
 async function replaceVaultFileAtomically(
   path: HubblePath,
   content: string,
-  signal?: AbortSignal
+  signal: AbortSignal | undefined,
+  fileSystem: NoteFileSystem
 ): Promise<ResultType<void, NoteWriteError>> {
   throwIfAborted(signal);
 
   const metadata = await Result.tryPromise({
-    try: () => stat(path.absolute),
+    try: () => fileSystem.stat(path.absolute),
     catch: (cause) => editWriteError(path, path.absolute, cause, "Could not inspect the Hubble note before editing."),
   });
   if (Result.isError(metadata)) return metadata;
@@ -492,7 +529,7 @@ async function replaceVaultFileAtomically(
     `.${basename(path.absolute)}.pi-hubble-${process.pid}-${randomUUID()}.tmp`
   );
   const opened = await Result.tryPromise({
-    try: () => open(temporaryPath, "wx", 0o600),
+    try: () => fileSystem.open(temporaryPath, "wx", 0o600),
     catch: (cause) => editWriteError(path, temporaryPath, cause, "Could not create a temporary Hubble edit file."),
   });
   if (Result.isError(opened)) return opened;
@@ -538,15 +575,15 @@ async function replaceVaultFileAtomically(
       : closed.error;
   }
 
-  if (failure) return Result.err(await cleanUpFailedEdit(path, temporaryPath, failure));
-  if (signal?.aborted) return cancelAtomicEdit(path, temporaryPath, signal);
+  if (failure) return Result.err(await cleanUpFailedEdit(path, temporaryPath, failure, fileSystem));
+  if (signal?.aborted) return cancelAtomicEdit(path, temporaryPath, signal, fileSystem);
 
   const committed = await Result.tryPromise({
-    try: () => rename(temporaryPath, path.absolute),
+    try: () => fileSystem.rename(temporaryPath, path.absolute),
     catch: (cause) => editWriteError(path, path.absolute, cause, "Could not commit the Hubble note edit."),
   });
   if (Result.isError(committed)) {
-    return Result.err(await cleanUpFailedEdit(path, temporaryPath, committed.error));
+    return Result.err(await cleanUpFailedEdit(path, temporaryPath, committed.error, fileSystem));
   }
 
   return Result.ok();
@@ -559,19 +596,20 @@ async function replaceVaultFileAtomically(
 export async function editVaultFile(
   path: HubblePath,
   edits: ReadonlyArray<HubbleEdit>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  fileSystem: NoteFileSystem = nodeFileSystem
 ): Promise<ResultType<void, EditNoteError>> {
   return withFileMutationQueue(path.absolute, async () => {
     throwIfAborted(signal);
     const current = await Result.tryPromise({
-      try: () => readFile(path.absolute, "utf8"),
+      try: () => fileSystem.readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
     });
     if (Result.isError(current)) return current;
     throwIfAborted(signal);
 
     const writable = await Result.tryPromise({
-      try: () => access(path.absolute, constants.W_OK),
+      try: () => fileSystem.access(path.absolute, constants.W_OK),
       catch: (cause) => editWriteError(path, path.absolute, cause, "The Hubble note is not writable."),
     });
     if (Result.isError(writable)) return writable;
@@ -589,7 +627,7 @@ export async function editVaultFile(
     if (Result.isError(next)) return next;
     throwIfAborted(signal);
 
-    return replaceVaultFileAtomically(path, bom + restoreLineEndings(next.value, lineEnding), signal);
+    return replaceVaultFileAtomically(path, bom + restoreLineEndings(next.value, lineEnding), signal, fileSystem);
   });
 }
 
@@ -602,12 +640,15 @@ function discoveredNoteReference(vault: VaultRoot, absolute: string): NoteRefere
 }
 
 /** Recursively discovers supported Hubble notes while ignoring symlinks. */
-export async function listNoteFiles(vault: VaultRoot): Promise<ResultType<NoteReference[], DiscoveryError>> {
+export async function listNoteFiles(
+  vault: VaultRoot,
+  fileSystem: NoteFileSystem = nodeFileSystem
+): Promise<ResultType<NoteReference[], DiscoveryError>> {
   const files: NoteReference[] = [];
   /** Walks one vault directory and adds its supported note files to the discovery list. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
     const entries = await Result.tryPromise({
-      try: () => readdir(directory, { withFileTypes: true }),
+      try: () => fileSystem.readdir(directory, { withFileTypes: true }),
       catch: (cause) =>
         new VaultDiscoveryError({
           path: directory,
@@ -634,7 +675,7 @@ export async function listNoteFiles(vault: VaultRoot): Promise<ResultType<NoteRe
   }
 
   const rootStat = await Result.tryPromise({
-    try: () => stat(vault.root),
+    try: () => fileSystem.stat(vault.root),
     catch: (cause) =>
       new VaultDiscoveryError({
         path: vault.root,

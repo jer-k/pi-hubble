@@ -1,21 +1,26 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { expect, test } from "vitest";
-import extension from "../extensions/hubble.ts";
 
-type ToolExecutor = (...args: unknown[]) => Promise<unknown>;
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { expect, test } from "vitest";
+
+import extension from "../extensions/hubble.ts";
+import { testCast } from "./test-cast.ts";
+
+type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
+type ToolExecutor = RegisteredTool["execute"];
+type FlagOptions = Parameters<ExtensionAPI["registerFlag"]>[1];
 
 test("registers the flag, command, autocomplete, and all tools lazily", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-extension-"));
-  const flags: Array<{ name: string; options: unknown }> = [];
+  const flags: Array<{ name: string; options: FlagOptions }> = [];
   const tools: Array<{ name: string; execute: ToolExecutor }> = [];
   const commands: string[] = [];
   const events: string[] = [];
   let getFlagCalls = 0;
   const pi = {
-    registerFlag: (name: string, options: unknown) => flags.push({ name, options }),
+    registerFlag: (name: string, options: FlagOptions) => flags.push({ name, options }),
     registerTool: (tool: { name: string; execute: ToolExecutor }) => tools.push(tool),
     registerCommand: (name: string) => commands.push(name),
     on: (event: string) => events.push(event),
@@ -25,7 +30,7 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
     },
   };
 
-  extension(pi as unknown as ExtensionAPI);
+  extension(testCast<typeof pi, ExtensionAPI>(pi));
   expect(flags).toEqual([
     {
       name: "hubble-dir",
@@ -34,20 +39,16 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
   ]);
   expect(commands).toEqual(["hubble"]);
   expect(events).toEqual(["session_start"]);
-  expect(tools.map((tool) => tool.name)).toEqual([
-    "hubble_search",
-    "hubble_read",
-    "hubble_create",
-    "hubble_edit",
-  ]);
+  expect(tools.map((tool) => tool.name)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
   expect(getFlagCalls).toBe(0);
 
   const context = { cwd: process.cwd(), isProjectTrusted: () => true };
+  const executionContext = testCast<typeof context, ExtensionContext>(context);
   const createTool = tools.find((tool) => tool.name === "hubble_create");
   if (!createTool) throw new Error("hubble_create was not registered");
   await Promise.all([
-    createTool.execute("create-1", { title: "Cached Root", content: "body" }, undefined, undefined, context),
-    createTool.execute("create-2", { title: "Cached Root", content: "body" }, undefined, undefined, context),
+    createTool.execute("create-1", { title: "Cached Root", content: "body" }, undefined, undefined, executionContext),
+    createTool.execute("create-2", { title: "Cached Root", content: "body" }, undefined, undefined, executionContext),
   ]);
   expect(getFlagCalls).toBe(1);
   expect(await readFile(join(root, "cached-root.md"), "utf8")).toContain("# Cached Root");
@@ -57,7 +58,7 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
 test("retries root resolution after a failed attempt", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-extension-retry-"));
   const tools: Array<{ name: string; execute: ToolExecutor }> = [];
-  let flag: unknown = 42;
+  let flag: string | number = 42;
   let getFlagCalls = 0;
   const pi = {
     registerFlag: () => undefined,
@@ -70,17 +71,18 @@ test("retries root resolution after a failed attempt", async () => {
     },
   };
 
-  extension(pi as unknown as ExtensionAPI);
+  extension(testCast<typeof pi, ExtensionAPI>(pi));
   const createTool = tools.find((tool) => tool.name === "hubble_create");
   if (!createTool) throw new Error("hubble_create was not registered");
   const context = { cwd: process.cwd(), isProjectTrusted: () => true };
+  const executionContext = testCast<typeof context, ExtensionContext>(context);
 
   await expect(
-    createTool.execute("failed", { title: "Retry Root", content: "body" }, undefined, undefined, context)
+    createTool.execute("failed", { title: "Retry Root", content: "body" }, undefined, undefined, executionContext)
   ).rejects.toThrow("--hubble-dir requires a non-empty path");
 
   flag = root;
-  await createTool.execute("retry", { title: "Retry Root", content: "body" }, undefined, undefined, context);
+  await createTool.execute("retry", { title: "Retry Root", content: "body" }, undefined, undefined, executionContext);
 
   expect(getFlagCalls).toBe(2);
   expect(await readFile(join(root, "retry-root.md"), "utf8")).toContain("# Retry Root");

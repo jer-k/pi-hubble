@@ -1,45 +1,46 @@
 import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+import type {
+  AutocompleteProviderFactory,
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionHandler,
+  SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 import { Result } from "better-result";
 import { expect, test } from "vitest";
+
 import { registerHubbleAutocomplete } from "../extensions/hubble-autocomplete.ts";
 import { VaultNotConfiguredError } from "../extensions/hubble-config.ts";
 import { openVault } from "../extensions/hubble-vault.ts";
+import { testCast } from "./test-cast.ts";
 
-type GenericHandler = (...args: unknown[]) => unknown;
+type SessionStartHandler = ExtensionHandler<SessionStartEvent>;
 
-type AutocompleteProvider = {
-  getSuggestions: (
-    lines: string[],
-    cursorLine: number,
-    cursorCol: number,
-    options: { signal: AbortSignal }
-  ) => Promise<{ prefix: string; items: Array<{ value: string; label: string }> }>;
-  applyCompletion: (...args: unknown[]) => unknown;
-  shouldTriggerFileCompletion: (...args: unknown[]) => boolean;
-};
+const sessionStartEvent: SessionStartEvent = { type: "session_start", reason: "startup" };
 
 function createPi() {
-  let sessionStart: GenericHandler | undefined;
+  let sessionStart: SessionStartHandler | undefined;
   const pi = {
-    on(_event: string, handler: GenericHandler) {
+    on(_event: string, handler: SessionStartHandler) {
       sessionStart = handler;
     },
   };
-  return { pi: pi as unknown as ExtensionAPI, getSessionStart: () => sessionStart };
+  return { pi: testCast<typeof pi, ExtensionAPI>(pi), getSessionStart: () => sessionStart };
 }
 
 test("registers no provider for non-interactive sessions", () => {
   const { pi, getSessionStart } = createPi();
   registerHubbleAutocomplete(pi, async () => openVault("unused"));
 
-  const providers: unknown[] = [];
-  getSessionStart()?.(
-    {},
-    { hasUI: false, ui: { addAutocompleteProvider: (provider: unknown) => providers.push(provider) } }
-  );
+  const providers: AutocompleteProviderFactory[] = [];
+  const context = {
+    hasUI: false,
+    ui: { addAutocompleteProvider: (provider: AutocompleteProviderFactory) => providers.push(provider) },
+  };
+  getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
 
   expect(providers).toHaveLength(0);
 });
@@ -55,7 +56,7 @@ test("returns no suggestions for expected failures but propagates defects", asyn
     hasUI: true,
     cwd: process.cwd(),
     isProjectTrusted: () => true,
-    ui: { addAutocompleteProvider: (_factory: GenericHandler) => undefined },
+    ui: { addAutocompleteProvider: (_factory: AutocompleteProviderFactory) => undefined },
   };
 
   const expectedFailure = createPi();
@@ -63,12 +64,13 @@ test("returns no suggestions for expected failures but propagates defects", asyn
     Result.err(new VaultNotConfiguredError({ globalPath: "/private/config.json", message: "internal detail" }))
   );
 
-  let expectedFactory: GenericHandler | undefined;
+  let expectedFactory: AutocompleteProviderFactory | undefined;
   context.ui.addAutocompleteProvider = (factory) => {
     expectedFactory = factory;
   };
-  expectedFailure.getSessionStart()?.({}, context);
-  const expectedProvider = expectedFactory?.(current) as AutocompleteProvider;
+  expectedFailure.getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
+  if (expectedFactory === undefined) throw new Error("Expected autocomplete provider registration");
+  const expectedProvider = expectedFactory(current);
 
   expect(await expectedProvider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal })).toEqual({
     prefix: "@hubble/",
@@ -80,12 +82,13 @@ test("returns no suggestions for expected failures but propagates defects", asyn
     throw new Error("unexpected autocomplete defect");
   });
 
-  let defectFactory: GenericHandler | undefined;
+  let defectFactory: AutocompleteProviderFactory | undefined;
   context.ui.addAutocompleteProvider = (factory) => {
     defectFactory = factory;
   };
-  defect.getSessionStart()?.({}, context);
-  const defectProvider = defectFactory?.(current) as AutocompleteProvider;
+  defect.getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
+  if (defectFactory === undefined) throw new Error("Expected autocomplete provider registration");
+  const defectProvider = defectFactory(current);
 
   await expect(
     defectProvider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal })
@@ -102,28 +105,28 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
   const { pi, getSessionStart } = createPi();
   registerHubbleAutocomplete(pi, async () => openVault(root));
 
-  let providerFactory: GenericHandler | undefined;
+  let providerFactory: AutocompleteProviderFactory | undefined;
   const current = {
     getSuggestions: async () => ({ prefix: "", items: [{ value: "fallback", label: "fallback" }] }),
     applyCompletion: () => ({ lines: ["done"], cursorLine: 0, cursorCol: 4 }),
     shouldTriggerFileCompletion: () => false,
   };
-  getSessionStart()?.(
-    {},
-    {
-      hasUI: true,
-      cwd: process.cwd(),
-      isProjectTrusted: () => true,
-      ui: { addAutocompleteProvider: (factory: GenericHandler) => (providerFactory = factory) },
-    }
-  );
-  const provider = providerFactory?.(current) as AutocompleteProvider;
+  const context = {
+    hasUI: true,
+    cwd: process.cwd(),
+    isProjectTrusted: () => true,
+    ui: { addAutocompleteProvider: (factory: AutocompleteProviderFactory) => (providerFactory = factory) },
+  };
+  getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
+  if (providerFactory === undefined) throw new Error("Expected autocomplete provider registration");
+  const provider = providerFactory(current);
   expect(await provider.getSuggestions(["text"], 0, 4, { signal: new AbortController().signal })).toEqual({
     prefix: "",
     items: [{ value: "fallback", label: "fallback" }],
   });
 
   const suggestions = await provider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal });
+  if (suggestions === null) throw new Error("Expected Hubble autocomplete suggestions");
   expect(suggestions.prefix).toBe("@hubble/");
   expect(suggestions.items.map((item: { label: string }) => item.label)).toEqual([
     "@hubble/alpha.md",
@@ -152,7 +155,7 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
     cursorLine: 0,
     cursorCol: 4,
   });
-  expect(provider.shouldTriggerFileCompletion([], 0, 0)).toBe(false);
+  expect(provider.shouldTriggerFileCompletion?.([], 0, 0)).toBe(false);
 
   const controller = new AbortController();
   controller.abort();

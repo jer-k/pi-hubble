@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Result } from "better-result";
+
 import { registerHubbleAutocomplete } from "./hubble-autocomplete.ts";
 import { registerHubbleCommand } from "./hubble-command.ts";
 import { type GetVault, resolveHubbleRoot } from "./hubble-config.ts";

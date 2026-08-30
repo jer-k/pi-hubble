@@ -8,6 +8,7 @@ import {
   Spacer,
   Text,
 } from "@earendil-works/pi-tui";
+
 import type { NoteReference } from "./hubble-vault.ts";
 
 /** Formats a filesystem path as an escaped @ attachment for the Pi editor. */

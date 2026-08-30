@@ -1,4 +1,7 @@
 import { type Result as ResultType, TaggedError } from "better-result";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+
 import type { HubblePath } from "./hubble-paths.ts";
 
 /** Filesystem conditions that Hubble callers can recover from directly. */
@@ -18,10 +21,14 @@ export class ExistingFileError extends TaggedError("ExistingFileError")<{
   readonly message: string;
 }> {}
 
-/** Reads a Node-style error code without assuming the rejection is an Error instance. */
-function systemErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  return typeof error.code === "string" ? error.code : undefined;
+const SystemError = Type.Object({ code: Type.String() }, { additionalProperties: true });
+
+/** Reads the recoverable Node error codes used by Hubble. */
+function systemErrorCode(cause: unknown): "ENOENT" | "EEXIST" | undefined {
+  if (!Value.Check(SystemError, cause)) return undefined;
+  if (cause.code === "ENOENT") return "ENOENT";
+  if (cause.code === "EEXIST") return "EEXIST";
+  return undefined;
 }
 
 /** Maps the filesystem failures that callers need to recover from. */

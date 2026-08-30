@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+
 import type { NoteReference } from "../extensions/hubble-notes.ts";
 import { HubbleNotePicker } from "../extensions/hubble-ui.ts";
 
