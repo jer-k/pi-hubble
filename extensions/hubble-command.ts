@@ -17,20 +17,20 @@ function appendEditorAttachment(
 }
 
 interface HubbleCommandSelection {
-  query: string;
-  searchContents: boolean;
+  readonly query: string;
+  readonly searchMode: "filename" | "contents";
 }
 
 /** Parses /hubble arguments into a note query and filename/content search mode. */
 function parseHubbleCommand(args: string): HubbleCommandSelection {
   const trimmed = args.trim();
   const searchMatch = trimmed.match(/^search(?:\s+(.+))?$/iu);
-  if (searchMatch) return { query: searchMatch[1]?.trim() ?? "", searchContents: true };
+  if (searchMatch) return { query: searchMatch[1]?.trim() ?? "", searchMode: "contents" };
 
   const findMatch = trimmed.match(/^find(?:\s+(.+))?$/iu);
-  if (findMatch) return { query: findMatch[1]?.trim() ?? "", searchContents: false };
+  if (findMatch) return { query: findMatch[1]?.trim() ?? "", searchMode: "filename" };
 
-  return { query: trimmed, searchContents: false };
+  return { query: trimmed, searchMode: "filename" };
 }
 
 /** Removes one matching pair of single or double quotes from a value. */
@@ -46,9 +46,9 @@ function unquote(value: string): string {
 }
 
 interface NewCommandSelection {
-  title: string;
-  folder?: string;
-  format?: string;
+  readonly title: string;
+  readonly folder?: string;
+  readonly format?: string;
 }
 
 /** Removes one named value flag from command text and returns its value. */
@@ -69,7 +69,11 @@ function parseNewCommand(args: string): NewCommandSelection | undefined {
 
   const folder = extractValueFlag(match[1]?.trim() ?? "", "folder");
   const format = extractValueFlag(folder.remainder, "format");
-  return { title: unquote(format.remainder), folder: folder.value, format: format.value };
+  return {
+    title: unquote(format.remainder),
+    ...(folder.value === undefined ? {} : { folder: folder.value }),
+    ...(format.value === undefined ? {} : { format: format.value }),
+  };
 }
 
 /** Narrows a command-line value to a supported Hubble creation format. */
@@ -81,9 +85,9 @@ function isNoteFormat(format: string): format is HubbleNoteFormat {
 async function selectNotes(
   vault: Vault,
   query: string,
-  searchContents: boolean
+  searchMode: HubbleCommandSelection["searchMode"]
 ): Promise<ResultType<NoteReference[], HubbleFailure>> {
-  if (searchContents) {
+  if (searchMode === "contents") {
     const results = await vault.search(query);
     if (Result.isError(results)) return results;
     return Result.ok(results.value.map((result) => result.note));
@@ -190,14 +194,14 @@ export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): voi
         return;
       }
 
-      const { query, searchContents } = parseHubbleCommand(args);
+      const { query, searchMode } = parseHubbleCommand(args);
       const vault = await getVault(ctx);
       if (Result.isError(vault)) {
         ctx.ui.notify(vault.error.message, "error");
         return;
       }
 
-      const notes = await selectNotes(vault.value, query, searchContents);
+      const notes = await selectNotes(vault.value, query, searchMode);
       if (Result.isError(notes)) {
         ctx.ui.notify(notes.error.message, "error");
         return;
@@ -210,7 +214,7 @@ export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): voi
 
       const selected = await ctx.ui.custom<NoteReference | undefined>(
         (tui, theme, keybindings, done) =>
-          new HubbleNotePicker(tui, theme, keybindings, notes.value, searchContents ? "" : query, done)
+          new HubbleNotePicker(tui, theme, keybindings, notes.value, searchMode === "contents" ? "" : query, done)
       );
 
       if (selected) {

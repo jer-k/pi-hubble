@@ -1,18 +1,21 @@
 import { type Result as ResultType, TaggedError } from "better-result";
 import type { HubblePath } from "./hubble-paths.ts";
 
+/** Filesystem conditions that Hubble callers can recover from directly. */
 export type FileSystemFailure = MissingFileError | ExistingFileError;
 
+/** A filesystem operation failed because its target did not exist. */
 export class MissingFileError extends TaggedError("MissingFileError")<{
-  path: string;
-  cause: unknown;
-  message: string;
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
 
+/** A filesystem creation failed because its target already existed. */
 export class ExistingFileError extends TaggedError("ExistingFileError")<{
-  path: string;
-  cause: unknown;
-  message: string;
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
 
 /** Reads a Node-style error code without assuming the rejection is an Error instance. */
@@ -33,6 +36,7 @@ export function mapFileSystemError<T>(path: string, cause: T): FileSystemFailure
   }
 }
 
+/** Stable classifications for unsafe or invalid vault paths. */
 export type VaultPathReason =
   | "empty"
   | "absolute"
@@ -42,64 +46,93 @@ export type VaultPathReason =
   | "unsupported-note-format"
   | "filesystem";
 
+/** A user-supplied vault path could not be resolved safely. */
 export class VaultPathError extends TaggedError("VaultPathError")<{
-  input: string;
-  reason: VaultPathReason;
-  cause?: unknown;
-  message: string;
+  readonly input: string;
+  readonly reason: VaultPathReason;
+  readonly cause?: unknown;
+  readonly message: string;
 }> {}
 
+/** Stable classifications for invalid note input. */
 export type NoteValidationReason = "title" | "query" | "filename" | "format";
+/** Note input could not be parsed into a valid creation or search request. */
 export class NoteValidationError extends TaggedError("NoteValidationError")<{
-  reason: NoteValidationReason;
-  path?: string;
-  title?: string;
-  message: string;
+  readonly reason: NoteValidationReason;
+  readonly path?: string;
+  readonly title?: string;
+  readonly message: string;
 }> {}
 
+/** A note creation or atomic edit filesystem operation failed. */
 export class NoteWriteError extends TaggedError("NoteWriteError")<{
-  operation: "create" | "edit";
-  path: string;
-  title?: string;
-  cause: unknown;
-  message: string;
+  readonly operation: "create" | "edit";
+  readonly path: string;
+  readonly title?: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
+/** Stable classifications for vault-open failures. */
 export type VaultOpenReason = "open" | "not-directory";
+/** A configured vault root could not be opened as a directory. */
 export class VaultOpenError extends TaggedError("VaultOpenError")<{
-  root: string;
-  reason: VaultOpenReason;
-  cause?: unknown;
-  message: string;
+  readonly root: string;
+  readonly reason: VaultOpenReason;
+  readonly cause?: unknown;
+  readonly message: string;
 }> {}
-export class NoteNotFoundError extends TaggedError("NoteNotFoundError")<{ path: string; message: string }> {}
-export class NoteReadError extends TaggedError("NoteReadError")<{ path: string; cause: unknown; message: string }> {}
+/** A requested note does not exist in the vault. */
+export class NoteNotFoundError extends TaggedError("NoteNotFoundError")<{
+  readonly path: string;
+  readonly message: string;
+}> {}
+/** An existing note could not be read as a regular UTF-8 file. */
+export class NoteReadError extends TaggedError("NoteReadError")<{
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
 
+/** Stable classifications for invalid exact-text edit sets. */
 export type EditValidationReason = "empty" | "missing" | "duplicate" | "overlap" | "no-op";
+/** Exact-text edits were empty, ambiguous, overlapping, missing, or ineffective. */
 export class EditValidationError extends TaggedError("EditValidationError")<{
-  path: string;
-  reason: EditValidationReason;
-  message: string;
+  readonly path: string;
+  readonly reason: EditValidationReason;
+  readonly message: string;
 }> {}
+/** Stable classifications for vault discovery failures. */
 export type DiscoveryReason = "scan" | "not-directory";
+/** Supported notes could not be discovered beneath the vault root. */
 export class VaultDiscoveryError extends TaggedError("VaultDiscoveryError")<{
-  path: string;
-  reason: DiscoveryReason;
-  cause?: unknown;
-  message: string;
+  readonly path: string;
+  readonly reason: DiscoveryReason;
+  readonly cause?: unknown;
+  readonly message: string;
 }> {}
+/** Truncated tool output could not be persisted outside model context. */
 export class OutputPersistenceError extends TaggedError("OutputPersistenceError")<{
-  cause: unknown;
-  message: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
 
-export type HubbleFailure = { message: string };
+/** Minimal failure shape accepted by Pi integration boundaries. */
+export type HubbleFailure = { readonly message: string };
+/** Expected path, input, and storage failures from note creation. */
 export type CreateNoteError = VaultPathError | NoteValidationError | NoteWriteError;
+/** Result of creating a vault-contained note. */
 export type CreateNoteResult = ResultType<HubblePath, CreateNoteError>;
+/** Public alias for vault-open failures. */
 export type VaultOpenErrorType = VaultOpenError;
+/** Result of resolving a user-supplied vault path. */
 export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
+/** Result of reading one validated note file. */
 export type NoteReadResult = ResultType<string, NoteNotFoundError | NoteReadError>;
+/** Expected validation, read, and storage failures from note editing. */
 export type EditNoteError = EditValidationError | NoteNotFoundError | NoteReadError | NoteWriteError;
+/** Expected failure while discovering notes in a vault. */
 export type DiscoveryError = VaultDiscoveryError;
+/** Expected path and read failures from a high-level note operation. */
 export type VaultNoteError = VaultPathError | NoteNotFoundError | NoteReadError;
 
 /** Converts a typed Hubble failure into the exception expected by tool callers. */

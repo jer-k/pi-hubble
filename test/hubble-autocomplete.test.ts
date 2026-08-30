@@ -131,7 +131,7 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
     "@hubble/page.HTML",
     "@hubble/pi-hubble/long-note-name.html",
   ]);
-  expect(suggestions.items[0].value).toBe(`@${join(await realpath(root), "alpha.md")}`);
+  expect(suggestions.items.at(0)?.value).toBe(`@${join(await realpath(root), "alpha.md")}`);
 
   const scoped = await provider.getSuggestions(["@hubble/pi-hubble/"], 0, 18, {
     signal: new AbortController().signal,
@@ -145,7 +145,9 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
       },
     ],
   });
-  expect(provider.applyCompletion(["@hubble/"], 0, 8, suggestions.items[0], "@hubble/")).toEqual({
+  const firstSuggestion = suggestions.items.at(0);
+  if (firstSuggestion === undefined) throw new Error("Expected at least one Hubble suggestion");
+  expect(provider.applyCompletion(["@hubble/"], 0, 8, firstSuggestion, "@hubble/")).toEqual({
     lines: ["done"],
     cursorLine: 0,
     cursorCol: 4,

@@ -9,32 +9,39 @@ import type { Vault } from "./hubble-vault.ts";
 
 const CONFIG_FILENAME = "hubble.json";
 
+/** Failure to read a Hubble configuration file. */
 export class ConfigReadError extends TaggedError("ConfigReadError")<{
-  path: string;
-  cause: unknown;
-  message: string;
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
 
+/** Failure to parse a Hubble configuration file as JSON. */
 export class ConfigParseError extends TaggedError("ConfigParseError")<{
-  path: string;
-  cause: unknown;
-  message: string;
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
 }> {}
 
+/** A parsed Hubble configuration value with an unsupported shape or value. */
 export class InvalidConfigError extends TaggedError("InvalidConfigError")<{
-  path: string;
-  input?: unknown;
-  message: string;
+  readonly path: string;
+  readonly input?: unknown;
+  readonly message: string;
 }> {}
 
+/** Absence of a vault root in CLI, trusted local, and global configuration. */
 export class VaultNotConfiguredError extends TaggedError("VaultNotConfiguredError")<{
-  globalPath: string;
-  localPath?: string;
-  message: string;
+  readonly globalPath: string;
+  readonly localPath?: string;
+  readonly message: string;
 }> {}
 
+/** Expected failures while resolving Hubble configuration. */
 export type ConfigError = ConfigReadError | ConfigParseError | InvalidConfigError | VaultNotConfiguredError;
+/** Pi context fields required to resolve a vault root safely. */
 export type RootContext = Pick<ExtensionContext, "cwd" | "isProjectTrusted">;
+/** Lazily obtains an opened Vault for a Pi extension context. */
 export type GetVault = (context: RootContext) => Promise<ResultType<Vault, ConfigError | VaultOpenErrorType>>;
 
 /** Expands a configured vault path relative to the current working directory. */
@@ -89,7 +96,7 @@ async function readConfiguredRoot(
   }
 
   const parsed = Result.try({
-    try: () => JSON.parse(source.value) as unknown,
+    try: (): unknown => JSON.parse(source.value),
     catch: (cause) =>
       new ConfigParseError({
         path: configPath,
@@ -106,7 +113,7 @@ async function readConfiguredRoot(
     );
   }
 
-  const root = (parsed.value as { root?: unknown }).root;
+  const root = "root" in parsed.value ? parsed.value.root : undefined;
   if (root === undefined) return Result.ok(undefined);
 
   if (typeof root !== "string") {
@@ -148,7 +155,7 @@ export async function resolveHubbleRoot(
     return Result.err(
       new VaultNotConfiguredError({
         globalPath,
-        localPath: projectTrusted ? localPath : undefined,
+        ...(projectTrusted ? { localPath } : {}),
         message: "Hubble vault is not configured. Set a Hubble root or pass --hubble-dir /path/to/vault.",
       })
     );

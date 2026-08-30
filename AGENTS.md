@@ -11,21 +11,32 @@ JSON operations with `Result.try` / `Result.tryPromise`.
 Do not convert programmer defects into `Result` values. Exceptions are allowed
 at integration boundaries, for cancellation, and in tests. Pi tool handlers
 should use the existing `throwHubbleError` boundary; UI handlers should notify
-the user and return.
+the user and return. These rules also apply to production scripts: represent
+expected CLI, Git, and filesystem failures as values, then render them and set
+the exit status at the outermost CLI boundary.
 
 ## Documentation
 
-Add concise JSDoc to every new production function, method, and non-obvious
-helper. Document exported APIs' behavior, side effects, and possible
-`Result` errors. Test-only helpers do not require JSDoc unless they are
-non-obvious.
+Add concise JSDoc to every new exported production symbol and every new
+non-obvious internal helper. Document exported APIs' behavior, side effects,
+and possible `Result` errors. Test-only helpers do not require JSDoc unless
+they are non-obvious.
+
+## Type safety
+
+Keep the strict options in `tsconfig.json` enabled. Prefer readonly domain and
+API values. Avoid non-null assertions, `any`, and non-`as const` casts. When a
+boundary or branding cast is unavoidable, add a `// SAFETY:` comment explaining
+the invariant that makes it sound.
 
 ## Vault safety
 
 All user-supplied vault paths must remain vault-relative, reject traversal and
 absolute paths, reject symlink escapes, and only operate on supported Hubble note files.
 Use the existing path-resolution helpers rather than joining user input
-directly.
+directly. Do not manually construct `HubblePath`, `NoteReference`, or
+`VaultRoot` values; obtain them through `Vault.open`, path resolution, or vault
+discovery.
 
 All vault mutations must use Pi's `withFileMutationQueue`.
 
@@ -36,6 +47,10 @@ Add tests for both success and structured failure cases. Prefer asserting
 
 Security-sensitive behavior, filesystem failures, and concurrent mutations
 should have regression tests.
+
+Prefer tests through public APIs and real seams. Do not add new module mocks or
+spy-driven assertions. When touching existing module-mocked filesystem tests,
+prefer migrating the affected behavior to a narrow injected filesystem seam.
 
 Before finishing, run:
 
