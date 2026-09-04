@@ -43,7 +43,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.3",
     "@earendil-works/pi-tui": "^0.84.2",
     "better-result": "3.0.1"
   }
