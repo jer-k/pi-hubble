@@ -39,6 +39,9 @@ export interface TruncatedOutput {
 /** Public parameter schema for Hubble note search. */
 export const SearchParameters = Type.Object({
   query: Type.String({ description: "Case-insensitive text to find in Hubble notes" }),
+  offset: Type.Optional(
+    Type.Integer({ minimum: 1, description: "1-based matching-line offset (default: 1); use nextOffset to continue" })
+  ),
   limit: Type.Optional(
     Type.Integer({ minimum: 1, maximum: 500, description: "Maximum matching lines (default: 100)" })
   ),
@@ -187,19 +190,21 @@ export async function truncateOutput(
 interface FormattedSearchResults {
   readonly lines: ReadonlyArray<string>;
   readonly count: number;
+  readonly hasMore: boolean;
 }
 
 /** Converts note search matches into the line-oriented tool output format. */
-function formatSearchResults(results: NoteSearchResult[], limit: number): FormattedSearchResults {
+function formatSearchResults(results: NoteSearchResult[], limit: number, offset: number): FormattedSearchResults {
+  let skipped = 0;
   const lines: string[] = [];
   for (const result of results) {
     for (const match of result.matches) {
+      if (skipped++ < offset - 1) continue;
+      if (lines.length >= limit) return { lines, count: lines.length, hasMore: true };
       lines.push(`${result.note.relative}:${match.line}: ${match.text.trim()}`);
-
-      if (lines.length >= limit) return { lines, count: lines.length };
     }
   }
-  return { lines, count: lines.length };
+  return { lines, count: lines.length, hasMore: false };
 }
 
 /** Registers the Hubble search, read, create, and edit tools. */
@@ -224,18 +229,29 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
 
       const searched = await vault.value.search(params.query, signal);
       const results = unwrap(searched);
-      const formatted = formatSearchResults(results, params.limit ?? 100);
+      const offset = params.offset ?? 1;
+      const formatted = formatSearchResults(results, params.limit ?? 100, offset);
       if (formatted.count === 0)
-        return noteResult("No Hubble notes matched the query.", {
-          query: params.query.trim().toLowerCase(),
-          matchCount: 0,
-        });
+        return noteResult(
+          offset === 1 ? "No Hubble notes matched the query." : "No more Hubble matches at this offset.",
+          {
+            query: params.query.trim().toLowerCase(),
+            matchCount: 0,
+          }
+        );
       const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
 
-      return noteResult(output.text, {
+      const nextOffset = formatted.hasMore ? offset + formatted.count : undefined;
+      const notice =
+        nextOffset === undefined
+          ? ""
+          : `\n\n[More matches available. Continue hubble_search with the same query and offset: ${nextOffset}.]`;
+      return noteResult(output.text + notice, {
+        nextOffset,
+        hasMore: formatted.hasMore,
         query: params.query.trim().toLowerCase(),
         matchCount: formatted.count,
-        truncated: output.truncated,
+        truncated: output.truncated || formatted.hasMore,
         fullOutputPath: output.fullOutputPath,
       });
     },

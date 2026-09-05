@@ -300,3 +300,27 @@ test("reports validation failures and honors cancellation", async () => {
     tools.hubble_search.execute("search", { query: "anything" }, controller.signal, undefined, context)
   ).rejects.toThrow("cancelled");
 });
+
+test("reports omitted search matches and allows retrieving every page", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-search-page-"));
+  const vault = await openVault(root);
+  if (vault.status === "error") throw vault.error;
+  await vault.value.create("Matches", "match one\nmatch two\nmatch three");
+  const tools = register(async () => vault);
+  const first = await tools.hubble_search.execute("page", { query: "match ", limit: 2 }, undefined, undefined, context);
+  // The title matches the trimmed query too; all matching lines participate in pagination.
+  expect(first.details).toMatchObject({ matchCount: 2, hasMore: true, truncated: true, nextOffset: 3 });
+  expect(firstText(first)).toContain("offset: 3");
+  const next = await tools.hubble_search.execute(
+    "page",
+    { query: "match ", limit: 2, offset: 3 },
+    undefined,
+    undefined,
+    context
+  );
+  expect(next.details).toMatchObject({ matchCount: 2, hasMore: false, truncated: false });
+  expect(firstText(next)).toContain("match two");
+  expect(firstText(next)).toContain("match three");
+  const end = await tools.hubble_search.execute("page", { query: "match", offset: 5 }, undefined, undefined, context);
+  expect(firstText(end)).toBe("No more Hubble matches at this offset.");
+});
