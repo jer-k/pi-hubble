@@ -164,3 +164,68 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
     items: [],
   });
 });
+
+test("caches discovery briefly, refreshes creations, and rejects unsafe cached attachments", async () => {
+  const fs = await import("node:fs/promises");
+  const base = await mkdtemp(join(tmpdir(), "hubble-autocomplete-cache-"));
+  const root = join(base, "vault");
+  await mkdir(root);
+  await writeFile(join(root, "alpha.md"), "alpha");
+  let clock = 0;
+  let allowScan = true;
+  const opened = await openVault(root, {
+    ...fs,
+    async readdir(path, options) {
+      if (!allowScan) throw new Error("unexpected rescan");
+      return fs.readdir(path, options);
+    },
+  });
+  if (opened.status === "error") throw opened.error;
+  const { pi, getSessionStart } = createPi();
+  registerHubbleAutocomplete(
+    pi,
+    async () => opened,
+    () => clock
+  );
+  let factory: AutocompleteProviderFactory | undefined;
+  const ctx = {
+    hasUI: true,
+    ui: {
+      addAutocompleteProvider(value: AutocompleteProviderFactory) {
+        factory = value;
+      },
+    },
+  };
+  getSessionStart()?.(sessionStartEvent, testCast<typeof ctx, ExtensionContext>(ctx));
+  if (!factory) throw new Error("Expected provider");
+  const provider = factory({
+    getSuggestions: async () => null,
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+  });
+  const suggestions = () => provider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal });
+  try {
+    expect((await suggestions())?.items).toHaveLength(1);
+    allowScan = false;
+    expect((await suggestions())?.items).toHaveLength(1);
+    await writeFile(join(root, "external.md"), "external");
+    allowScan = true;
+    clock = 1_001;
+    expect((await suggestions())?.items).toHaveLength(2);
+    await opened.value.create("Created", "body");
+    expect((await suggestions())?.items).toHaveLength(3);
+    // A failed refresh must not cache the failure for the remainder of the TTL.
+    clock = 2_002;
+    allowScan = false;
+    expect((await suggestions())?.items).toEqual([]);
+    allowScan = true;
+    expect((await suggestions())?.items).toHaveLength(3);
+    await fs.rename(root, join(base, "old-vault"));
+    const outside = join(base, "outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "alpha.md"), "private");
+    await fs.symlink(outside, root);
+    expect((await suggestions())?.items).toEqual([]);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
