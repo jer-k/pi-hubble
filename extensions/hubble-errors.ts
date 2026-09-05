@@ -157,3 +157,11 @@ export type VaultNoteError = VaultPathError | NoteNotFoundError | NoteReadError;
 export function throwHubbleError(error: HubbleFailure): never {
   throw new Error(error.message, { cause: error });
 }
+
+/** A recoverable CLI, Git, filesystem, or upstream-content failure while syncing vendored skills. */
+export class SkillSyncError extends TaggedError("SkillSyncError")<{
+  readonly reason: "arguments" | "git" | "filesystem" | "upstream-entry" | "different" | "rollback";
+  readonly path?: string;
+  readonly cause?: unknown;
+  readonly message: string;
+}> {}
