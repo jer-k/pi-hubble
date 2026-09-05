@@ -81,6 +81,12 @@ export class Vault extends VaultRoot {
 
   /** Filesystem adapter used for note storage after path resolution. */
   private readonly fileSystem: NoteFileSystem | undefined;
+  private discoveryRevision = 0;
+
+  /** Changes after successful creation so autocomplete can immediately refresh its note list. */
+  get discoveryVersion(): number {
+    return this.discoveryRevision;
+  }
 
   /** Creates a Vault around an already canonicalized root. */
   private constructor(root: string, fileSystem: NoteFileSystem | undefined) {
@@ -185,7 +191,9 @@ export class Vault extends VaultRoot {
     format?: HubbleNoteFormat,
     filename?: string
   ): Promise<VaultCreateResult> {
-    return writeNewVaultFile(this, title, content, folder, format, filename, this.fileSystem);
+    const created = await writeNewVaultFile(this, title, content, folder, format, filename, this.fileSystem);
+    if (Result.isOk(created)) this.discoveryRevision++;
+    return created;
   }
 
   /**
