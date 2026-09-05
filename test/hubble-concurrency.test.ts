@@ -73,3 +73,52 @@ test.each(["success", "failure"] as const)("coordinates creation with the destin
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test.each(["save", "replace", "delete", "unchanged"] as const)(
+  "checks external %s before committing an edit",
+  async (action) => {
+    const root = await fs.mkdtemp(join(tmpdir(), "hubble-edit-conflict-"));
+    const path = join(root, "note.md");
+    await fs.writeFile(path, "old");
+    try {
+      const opened = await Vault.open(root, {
+        ...fs,
+        async open(file, flags, mode) {
+          const handle = await fs.open(file, flags, mode);
+          return {
+            chmod: handle.chmod.bind(handle),
+            close: handle.close.bind(handle),
+            writeFile: handle.writeFile.bind(handle),
+            async sync() {
+              await handle.sync();
+              if (action === "save") await fs.writeFile(path, "Hubble save");
+              if (action === "replace") {
+                await fs.writeFile(join(root, "replacement"), "old");
+                await fs.rename(join(root, "replacement"), path);
+              }
+              if (action === "delete") await fs.unlink(path);
+            },
+          };
+        },
+      });
+      if (opened.status === "error") throw opened.error;
+      const result = await opened.value.edit("note.md", [{ oldText: "old", newText: "new" }]);
+      if (action === "unchanged") {
+        expect(result.status).toBe("ok");
+        expect(await fs.readFile(path, "utf8")).toBe("new");
+      } else if (action === "delete") {
+        expect(result).toMatchObject({
+          status: "error",
+          error: { _tag: "NoteWriteError", cause: { _tag: "MissingFileError", cause: { code: "ENOENT" } } },
+        });
+        expect(await fs.readdir(root)).toEqual([]);
+      } else {
+        expect(result).toMatchObject({ status: "error", error: { _tag: "NoteConflictError" } });
+        expect(await fs.readFile(path, "utf8")).toBe(action === "save" ? "Hubble save" : "old");
+      }
+      expect((await fs.readdir(root)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+);

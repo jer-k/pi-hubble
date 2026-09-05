@@ -100,6 +100,12 @@ export class NoteReadError extends TaggedError("NoteReadError")<{
   readonly message: string;
 }> {}
 
+/** A note changed outside Pi while its replacement was being prepared; reread before retrying. */
+export class NoteConflictError extends TaggedError("NoteConflictError")<{
+  readonly path: string;
+  readonly message: string;
+}> {}
+
 /** Stable classifications for invalid exact-text edit sets. */
 export type EditValidationReason = "empty" | "missing" | "duplicate" | "overlap" | "no-op";
 /** Exact-text edits were empty, ambiguous, overlapping, missing, or ineffective. */
@@ -136,7 +142,12 @@ export type VaultPathResult = ResultType<HubblePath, VaultPathError>;
 /** Result of reading one validated note file. */
 export type NoteReadResult = ResultType<string, NoteNotFoundError | NoteReadError>;
 /** Expected validation, read, and storage failures from note editing. */
-export type EditNoteError = EditValidationError | NoteNotFoundError | NoteReadError | NoteWriteError;
+export type EditNoteError =
+  | EditValidationError
+  | NoteNotFoundError
+  | NoteReadError
+  | NoteWriteError
+  | NoteConflictError;
 /** Expected failure while discovering notes in a vault. */
 export type DiscoveryError = VaultDiscoveryError;
 /** Expected path and read failures from a high-level note operation. */
