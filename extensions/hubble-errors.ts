@@ -115,7 +115,7 @@ export class EditValidationError extends TaggedError("EditValidationError")<{
   readonly message: string;
 }> {}
 /** Stable classifications for vault discovery failures. */
-export type DiscoveryReason = "scan" | "not-directory";
+export type DiscoveryReason = "scan" | "not-directory" | "unsafe-path";
 /** Supported notes could not be discovered beneath the vault root. */
 export class VaultDiscoveryError extends TaggedError("VaultDiscoveryError")<{
   readonly path: string;
