@@ -107,7 +107,8 @@ by writing and syncing a same-directory temporary file, closing it, and
 atomically renaming it over the original so a failed edit cannot truncate the
 note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
 are checked against path traversal and symlink escapes, and note discovery
-recursively scans the vault while skipping symlinks.
+recursively scans the vault while skipping symlinks. Discovery revalidates the
+root, directories, and note paths so replacements after opening the vault are rejected.
 
 ## Interactive discovery
 

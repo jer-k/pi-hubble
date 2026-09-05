@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
 import * as nodeFileSystem from "node:fs/promises";
-import { basename, dirname, extname, join, relative, sep } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Result, type Result as ResultType } from "better-result";
@@ -24,6 +24,7 @@ import {
 } from "./hubble-errors.ts";
 import {
   assertNotePath,
+  canonicalVaultRoot,
   type HubbleNoteFormat,
   type HubblePath,
   isNotePath,
@@ -693,12 +694,27 @@ export async function editVaultFile(
   });
 }
 
-/** Constructs a contained note reference discovered by the symlink-ignoring vault walk. */
-function discoveredNoteReference(vault: VaultRoot, absolute: string): NoteReference {
-  const relativePath = relative(vault.root, absolute).split(sep).join("/");
-  // SAFETY: listNoteFiles starts at the nominal canonical vault root, descends only real directories, and ignores
-  // symbolic links. The discovered absolute path therefore remains inside the vault.
-  return { absolute, relative: relativePath } as NoteReference;
+/** Revalidates a directory before discovery, rejecting a root or child replaced by a symlink. */
+async function checkDiscoveryDirectory(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
+  const checked = await canonicalVaultRoot(directory);
+  if (Result.isError(checked))
+    return Result.err(
+      new VaultDiscoveryError({
+        path: directory,
+        reason: "unsafe-path",
+        cause: checked.error,
+        message: "Could not safely resolve the Hubble discovery directory.",
+      })
+    );
+  if (checked.value !== directory)
+    return Result.err(
+      new VaultDiscoveryError({
+        path: directory,
+        reason: "unsafe-path",
+        message: "The Hubble discovery directory was replaced by a symlink.",
+      })
+    );
+  return Result.ok();
 }
 
 /** Recursively discovers supported Hubble notes while ignoring symlinks. */
@@ -709,6 +725,8 @@ export async function listNoteFiles(
   const files: NoteReference[] = [];
   /** Walks one vault directory and adds its supported note files to the discovery list. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
+    const checked = await checkDiscoveryDirectory(directory);
+    if (Result.isError(checked)) return checked;
     const entries = await Result.tryPromise({
       try: () => fileSystem.readdir(directory, { withFileTypes: true }),
       catch: (cause) =>
@@ -729,13 +747,26 @@ export async function listNoteFiles(
         const visited = await visit(absolute);
         if (Result.isError(visited)) return visited;
       } else if (entry.isFile() && isNotePath(entry.name)) {
-        files.push(discoveredNoteReference(vault, absolute));
+        const checkedNote = await resolveVaultPath(vault, relative(vault.root, absolute));
+        if (Result.isError(checkedNote))
+          return Result.err(
+            new VaultDiscoveryError({
+              path: absolute,
+              reason: "unsafe-path",
+              cause: checkedNote.error,
+              message: "A Hubble note changed during discovery.",
+            })
+          );
+        // Ignore entries replaced by an internal symlink after readdir.
+        if (checkedNote.value.absolute === absolute) files.push(checkedNote.value);
       }
     }
 
     return Result.ok();
   }
 
+  const checkedRoot = await checkDiscoveryDirectory(vault.root);
+  if (Result.isError(checkedRoot)) return checkedRoot;
   const rootStat = await Result.tryPromise({
     try: () => fileSystem.stat(vault.root),
     catch: (cause) =>
