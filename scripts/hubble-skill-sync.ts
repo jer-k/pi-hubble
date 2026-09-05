@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { Result, type Result as ResultType } from "better-result";
@@ -170,6 +170,61 @@ async function stageSkills(
   return Result.isError(written) ? written : commit;
 }
 
+/** Swaps a fully copied sibling directory into place and restores the old copy if installation fails. */
+async function swapSkills(
+  incoming: string,
+  target: string,
+  backup: string,
+  fileSystem: SkillSyncFileSystem
+): Promise<ResultType<void, SkillSyncError>> {
+  const saved = await fileOperation(target, () => fileSystem.rename(target, backup));
+  if (Result.isError(saved) && !MissingFileError.is(saved.error.cause)) return saved;
+  const installed = await fileOperation(target, () => fileSystem.rename(incoming, target));
+  if (Result.isOk(installed) || Result.isError(saved)) return installed;
+  const restored = await fileOperation(backup, () => fileSystem.rename(backup, target));
+  if (Result.isError(restored))
+    return Result.err(
+      new SkillSyncError({
+        reason: "rollback",
+        path: backup,
+        cause: new AggregateError([installed.error, restored.error], "Skill installation and rollback failed"),
+        message: `Skill installation and rollback failed. The previous skills are preserved at ${backup}.`,
+      })
+    );
+  return installed;
+}
+
+/** Copies beside the destination before swapping; keeps the backup on rollback failure and reports cleanup failures. */
+async function installSkills(
+  staged: string,
+  target: string,
+  fileSystem: SkillSyncFileSystem
+): Promise<ResultType<void, SkillSyncError>> {
+  const temporary = await fileOperation(target, () => fileSystem.mkdtemp(join(dirname(target), ".hubble-skills-")));
+  if (Result.isError(temporary)) return temporary;
+  const incoming = join(temporary.value, "incoming");
+  const backup = join(temporary.value, "previous");
+  const copied = await fileOperation(incoming, () => fileSystem.cp(staged, incoming, { recursive: true }));
+  const installed = Result.isError(copied) ? copied : await swapSkills(incoming, target, backup, fileSystem);
+  // This directory is the recovery copy. Never delete it when rollback failed.
+  if (Result.isError(installed) && installed.error.reason === "rollback") return installed;
+  const cleaned = await fileOperation(temporary.value, () =>
+    fileSystem.rm(temporary.value, { recursive: true, force: true })
+  );
+  if (Result.isError(cleaned))
+    return Result.err(
+      new SkillSyncError({
+        reason: "filesystem",
+        path: temporary.value,
+        cause: Result.isError(installed)
+          ? new AggregateError([installed.error, cleaned.error], "Skill installation and cleanup failed")
+          : cleaned.error,
+        message: `Could not clean up skill installation files at ${temporary.value}.`,
+      })
+    );
+  return installed;
+}
+
 /** Fetches, stages, and compares upstream before installing or reporting check-mode drift. */
 async function syncInDirectory(
   args: SyncArguments,
@@ -205,11 +260,9 @@ async function syncInDirectory(
         message: `Vendored Hubble skills differ from ${options.upstreamRepository}@${commit.value}`,
       })
     );
-  const removed = await fileOperation(target, () => fileSystem.rm(target, { recursive: true, force: true }));
-  if (Result.isError(removed)) return removed;
-  const copied = await fileOperation(target, () => fileSystem.cp(staged, target, { recursive: true }));
-  return Result.isError(copied)
-    ? copied
+  const installed = await installSkills(staged, target, fileSystem);
+  return Result.isError(installed)
+    ? installed
     : Result.ok(`Synced Hubble skills from ${options.upstreamRepository}@${commit.value}.`);
 }
 
@@ -240,7 +293,9 @@ export async function syncHubbleSkills(
         cause: Result.isError(result)
           ? new AggregateError([result.error, cleaned.error], "Sync and cleanup failed")
           : cleaned.error,
-        message: "Could not clean up skill sync temporary files.",
+        message: Result.isError(result)
+          ? `${result.error.message} Additionally, could not clean up skill sync temporary files at ${temporary.value}.`
+          : `Could not clean up skill sync temporary files at ${temporary.value}.`,
       })
     );
   return result;
