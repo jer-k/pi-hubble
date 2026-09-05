@@ -190,21 +190,14 @@ export async function truncateOutput(
 interface FormattedSearchResults {
   readonly lines: ReadonlyArray<string>;
   readonly count: number;
-  readonly hasMore: boolean;
 }
 
 /** Converts note search matches into the line-oriented tool output format. */
-function formatSearchResults(results: NoteSearchResult[], limit: number, offset: number): FormattedSearchResults {
-  let skipped = 0;
-  const lines: string[] = [];
-  for (const result of results) {
-    for (const match of result.matches) {
-      if (skipped++ < offset - 1) continue;
-      if (lines.length >= limit) return { lines, count: lines.length, hasMore: true };
-      lines.push(`${result.note.relative}:${match.line}: ${match.text.trim()}`);
-    }
-  }
-  return { lines, count: lines.length, hasMore: false };
+function formatSearchResults(results: NoteSearchResult[]): FormattedSearchResults {
+  const lines = results.flatMap((result) =>
+    result.matches.map((match) => `${result.note.relative}:${match.line}: ${match.text.trim()}`)
+  );
+  return { lines, count: lines.length };
 }
 
 /** Registers the Hubble search, read, create, and edit tools. */
@@ -227,10 +220,11 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       const vault = await getVault(ctx);
       if (Result.isError(vault)) throwHubbleError(vault.error);
 
-      const searched = await vault.value.search(params.query, signal);
-      const results = unwrap(searched);
       const offset = params.offset ?? 1;
-      const formatted = formatSearchResults(results, params.limit ?? 100, offset);
+      const searched = unwrap(
+        await vault.value.searchPage(params.query, { offset, limit: params.limit ?? 100 }, signal)
+      );
+      const formatted = formatSearchResults(searched.results);
       if (formatted.count === 0)
         return noteResult(
           offset === 1 ? "No Hubble notes matched the query." : "No more Hubble matches at this offset.",
@@ -241,17 +235,17 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
         );
       const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
 
-      const nextOffset = formatted.hasMore ? offset + formatted.count : undefined;
+      const nextOffset = searched.hasMore ? offset + formatted.count : undefined;
       const notice =
         nextOffset === undefined
           ? ""
           : `\n\n[More matches available. Continue hubble_search with the same query and offset: ${nextOffset}.]`;
       return noteResult(output.text + notice, {
         nextOffset,
-        hasMore: formatted.hasMore,
+        hasMore: searched.hasMore,
         query: params.query.trim().toLowerCase(),
         matchCount: formatted.count,
-        truncated: output.truncated || formatted.hasMore,
+        truncated: output.truncated || searched.hasMore,
         fullOutputPath: output.fullOutputPath,
       });
     },
