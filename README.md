@@ -98,7 +98,7 @@ wraps `content` as a body fragment in a valid standalone document. In Pi's TUI,
 create calls show a syntax-highlighted document preview that can be expanded
 with the normal tool expansion keybinding.
 
-Writes are serialized with Pi's file mutation queue. Existing notes are edited
+Writes are serialized with Pi's file mutation queue. Creation also holds the destination file's queue so concurrent Pi reads and edits wait for the complete note or its failure cleanup. Existing notes are edited
 by writing and syncing a same-directory temporary file, closing it, and
 atomically renaming it over the original so a failed edit cannot truncate the
 note. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
