@@ -14,6 +14,7 @@ import {
   ExistingFileError,
   MissingFileError,
   mapFileSystemError,
+  NoteConflictError,
   NoteNotFoundError,
   NoteReadError,
   type NoteReadResult,
@@ -480,9 +481,9 @@ function editWriteError(path: HubblePath, filesystemPath: string, cause: unknown
 async function cleanUpFailedEdit(
   path: HubblePath,
   temporaryPath: string,
-  failure: NoteWriteError,
+  failure: NoteWriteError | NoteConflictError,
   fileSystem: NoteFileSystem
-): Promise<NoteWriteError> {
+): Promise<NoteWriteError | NoteConflictError> {
   const removed = await Result.tryPromise({
     try: () => fileSystem.unlink(temporaryPath),
     catch: (cause) => mapFileSystemError(temporaryPath, cause),
@@ -515,6 +516,47 @@ async function cancelAtomicEdit(
   throw reason;
 }
 
+interface EditSnapshot {
+  readonly content: string;
+  readonly metadata: Stats;
+}
+
+/** Detects external saves or replacements before committing; this is optimistic, not an interprocess lock. */
+async function checkEditSnapshot(
+  path: HubblePath,
+  snapshot: EditSnapshot,
+  fileSystem: NoteFileSystem
+): Promise<ResultType<void, NoteWriteError | NoteConflictError>> {
+  const current = await Result.tryPromise({
+    try: async () => ({
+      metadata: await fileSystem.stat(path.absolute),
+      content: await fileSystem.readFile(path.absolute, "utf8"),
+    }),
+    catch: (cause) =>
+      editWriteError(path, path.absolute, cause, "Could not verify the Hubble note before committing the edit."),
+  });
+  if (Result.isError(current)) return current;
+  const before = snapshot.metadata;
+  const after = current.value.metadata;
+  if (
+    snapshot.content !== current.value.content ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs ||
+    before.ctimeMs !== after.ctimeMs ||
+    before.mode !== after.mode
+  ) {
+    return Result.err(
+      new NoteConflictError({
+        path: path.relative,
+        message: "The Hubble note changed while editing. Read it again before retrying.",
+      })
+    );
+  }
+  return Result.ok();
+}
+
 /**
  * Writes complete replacement content to a sibling temporary file, syncs and closes it,
  * then atomically renames it over the note. The caller must hold Pi's mutation queue.
@@ -522,16 +564,11 @@ async function cancelAtomicEdit(
 async function replaceVaultFileAtomically(
   path: HubblePath,
   content: string,
+  snapshot: EditSnapshot,
   signal: AbortSignal | undefined,
   fileSystem: NoteFileSystem
-): Promise<ResultType<void, NoteWriteError>> {
+): Promise<ResultType<void, NoteWriteError | NoteConflictError>> {
   throwIfAborted(signal);
-
-  const metadata = await Result.tryPromise({
-    try: () => fileSystem.stat(path.absolute),
-    catch: (cause) => editWriteError(path, path.absolute, cause, "Could not inspect the Hubble note before editing."),
-  });
-  if (Result.isError(metadata)) return metadata;
 
   const temporaryPath = join(
     dirname(path.absolute),
@@ -554,7 +591,7 @@ async function replaceVaultFileAtomically(
 
   if (!failure) {
     const permissions = await Result.tryPromise({
-      try: () => handle.chmod(metadata.value.mode),
+      try: () => handle.chmod(snapshot.metadata.mode),
       catch: (cause) =>
         editWriteError(path, temporaryPath, cause, "Could not preserve the Hubble note permissions while editing."),
     });
@@ -587,6 +624,11 @@ async function replaceVaultFileAtomically(
   if (failure) return Result.err(await cleanUpFailedEdit(path, temporaryPath, failure, fileSystem));
   if (signal?.aborted) return cancelAtomicEdit(path, temporaryPath, signal, fileSystem);
 
+  const verified = await checkEditSnapshot(path, snapshot, fileSystem);
+  if (Result.isError(verified))
+    return Result.err(await cleanUpFailedEdit(path, temporaryPath, verified.error, fileSystem));
+  if (signal?.aborted) return cancelAtomicEdit(path, temporaryPath, signal, fileSystem);
+
   const committed = await Result.tryPromise({
     try: () => fileSystem.rename(temporaryPath, path.absolute),
     catch: (cause) => editWriteError(path, path.absolute, cause, "Could not commit the Hubble note edit."),
@@ -610,6 +652,11 @@ export async function editVaultFile(
 ): Promise<ResultType<void, EditNoteError>> {
   return withFileMutationQueue(path.absolute, async () => {
     throwIfAborted(signal);
+    const metadata = await Result.tryPromise({
+      try: () => fileSystem.stat(path.absolute),
+      catch: (cause) => noteReadError(path, cause),
+    });
+    if (Result.isError(metadata)) return metadata;
     const current = await Result.tryPromise({
       try: () => fileSystem.readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
@@ -636,7 +683,13 @@ export async function editVaultFile(
     if (Result.isError(next)) return next;
     throwIfAborted(signal);
 
-    return replaceVaultFileAtomically(path, bom + restoreLineEndings(next.value, lineEnding), signal, fileSystem);
+    return replaceVaultFileAtomically(
+      path,
+      bom + restoreLineEndings(next.value, lineEnding),
+      { content: current.value, metadata: metadata.value },
+      signal,
+      fileSystem
+    );
   });
 }
 
