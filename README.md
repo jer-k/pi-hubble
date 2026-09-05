@@ -113,7 +113,9 @@ root, directories, and note paths so replacements after opening the vault are re
 
 ## Interactive discovery
 
-- `@hubble/` autocomplete for attaching a vault note to the prompt; after typing
+- `@hubble/` autocomplete for attaching a vault note to the prompt; discovery
+  is cached for up to one second and refreshed immediately after this extension
+  creates a note. Suggested paths are rechecked even when cached. After typing
   a folder prefix, suggestions show only the remaining path so filename endings
   and extensions remain visible
 - `/hubble find <query>` to find note filenames explicitly
