@@ -362,67 +362,76 @@ export async function writeNewVaultFile(
 
       const absolute = target.value.absolute;
       const relativePath = target.value.relative;
-      const opened = await Result.tryPromise({
-        try: () => fileSystem.open(absolute, "wx"),
-        catch: (cause) => {
-          const filesystemError = mapFileSystemError(absolute, cause);
-          return new NoteWriteError({
-            operation: "create",
-            path: relativePath,
-            title: trimmedTitle,
-            cause: filesystemError,
-            message:
-              destination.value.filename !== undefined && ExistingFileError.is(filesystemError)
-                ? "A Hubble note already exists at the requested filename."
-                : "Could not create the Hubble note.",
+      // The root queue allocates names; the file queue also excludes readers and editors.
+      const attempt = await withFileMutationQueue(absolute, async (): Promise<CreateNoteResult> => {
+        const opened = await Result.tryPromise({
+          try: () => fileSystem.open(absolute, "wx"),
+          catch: (cause) => {
+            const filesystemError = mapFileSystemError(absolute, cause);
+            return new NoteWriteError({
+              operation: "create",
+              path: relativePath,
+              title: trimmedTitle,
+              cause: filesystemError,
+              message:
+                destination.value.filename !== undefined && ExistingFileError.is(filesystemError)
+                  ? "A Hubble note already exists at the requested filename."
+                  : "Could not create the Hubble note.",
+            });
+          },
+        });
+
+        if (Result.isError(opened)) {
+          return opened;
+        }
+
+        const handle = opened.value;
+        let written: ResultType<void, NoteWriteError>;
+        let closed: ResultType<void, NoteWriteError>;
+        try {
+          written = await Result.tryPromise({
+            try: () => handle.writeFile(body, "utf8"),
+            catch: (cause) =>
+              new NoteWriteError({
+                operation: "create",
+                path: relativePath,
+                title: trimmedTitle,
+                cause: mapFileSystemError(absolute, cause),
+                message: "Could not write the Hubble note.",
+              }),
           });
-        },
+        } finally {
+          closed = await Result.tryPromise({
+            try: () => handle.close(),
+            catch: (cause) =>
+              new NoteWriteError({
+                operation: "create",
+                path: relativePath,
+                title: trimmedTitle,
+                cause: mapFileSystemError(absolute, cause),
+                message: "Could not close the Hubble note.",
+              }),
+          });
+        }
+
+        if (Result.isError(written)) {
+          const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, written.error, fileSystem);
+          return Result.isError(removed) ? removed : written;
+        }
+        if (Result.isError(closed)) {
+          const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, closed.error, fileSystem);
+          return Result.isError(removed) ? removed : closed;
+        }
+
+        return Result.ok(target.value);
       });
-
-      if (Result.isError(opened)) {
-        if (destination.value.filename === undefined && ExistingFileError.is(opened.error.cause)) continue;
-        return opened;
-      }
-
-      const handle = opened.value;
-      let written: ResultType<void, NoteWriteError>;
-      let closed: ResultType<void, NoteWriteError>;
-      try {
-        written = await Result.tryPromise({
-          try: () => handle.writeFile(body, "utf8"),
-          catch: (cause) =>
-            new NoteWriteError({
-              operation: "create",
-              path: relativePath,
-              title: trimmedTitle,
-              cause: mapFileSystemError(absolute, cause),
-              message: "Could not write the Hubble note.",
-            }),
-        });
-      } finally {
-        closed = await Result.tryPromise({
-          try: () => handle.close(),
-          catch: (cause) =>
-            new NoteWriteError({
-              operation: "create",
-              path: relativePath,
-              title: trimmedTitle,
-              cause: mapFileSystemError(absolute, cause),
-              message: "Could not close the Hubble note.",
-            }),
-        });
-      }
-
-      if (Result.isError(written)) {
-        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, written.error, fileSystem);
-        return Result.isError(removed) ? removed : written;
-      }
-      if (Result.isError(closed)) {
-        const removed = await removeIncompleteNote(absolute, relativePath, trimmedTitle, closed.error, fileSystem);
-        return Result.isError(removed) ? removed : closed;
-      }
-
-      return Result.ok(target.value);
+      if (
+        Result.isError(attempt) &&
+        destination.value.filename === undefined &&
+        ExistingFileError.is(attempt.error.cause)
+      )
+        continue;
+      return attempt;
     }
     return Result.err(
       new NoteWriteError({
