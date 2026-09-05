@@ -71,8 +71,11 @@ current working directory.
 
 The extension registers these Pi tools:
 
-- `hubble_search(query, limit?)` searches note contents case-insensitively and
+- `hubble_search(query, limit?, offset?)` searches note contents case-insensitively and
   returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
+  Capped results include a continuation notice and `nextOffset`; pass that value
+  as the 1-based matching-line `offset` to retrieve the next page. Pages reflect
+  the current vault, so concurrent note changes can shift their offsets.
 - `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
 - `hubble_create(title, content, filename?, folder?, format?)` creates a new
@@ -85,8 +88,9 @@ The extension registers these Pi tools:
 All document paths are relative to the configured vault and must use `.md` or
 `.html` (case-insensitively). Search operates line-by-line on note source, so
 HTML is searched as raw source. Search and read output is limited to 50 KB or
-2,000 lines; when output is truncated, the complete result is saved to a
-temporary file.
+2,000 lines; when output is truncated, the complete selected page or read range is saved to a
+temporary file. Search pagination and byte truncation are reported separately
+through `hasMore`/`nextOffset` and `fullOutputPath`.
 
 When `filename` is omitted, `hubble_create` converts the title into a filename
 slug and resolves collisions with names such as `my-note-2.md` or
