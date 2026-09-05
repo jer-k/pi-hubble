@@ -49,6 +49,21 @@ export interface NoteSearchResult {
 export type VaultReadResult = ResultType<ReadNote, VaultNoteError>;
 /** Result of searching every supported note. */
 export type VaultSearchResult = ResultType<NoteSearchResult[], DiscoveryError | VaultNoteError | NoteValidationError>;
+/** A matching-line window; offsets are 1-based and limits are between 1 and 500. */
+export interface SearchPageOptions {
+  readonly offset: number;
+  readonly limit: number;
+}
+
+/** A bounded search page with a lookahead indicating whether more matches exist. */
+export interface NoteSearchPage {
+  readonly results: NoteSearchResult[];
+  readonly hasMore: boolean;
+}
+
+/** A search page or a structured input, discovery, or read failure. */
+export type VaultSearchPageResult = ResultType<NoteSearchPage, DiscoveryError | VaultNoteError | NoteValidationError>;
+
 /** Result of creating one note without overwriting an existing file. */
 export type VaultCreateResult = ResultType<NoteReference, CreateNoteError>;
 /** Result of atomically editing one existing note. */
@@ -81,20 +96,47 @@ export class Vault extends VaultRoot {
   }
 
   /** Lists all supported notes currently stored in the vault. */
-  async list(): Promise<VaultListResult> {
-    return listNoteFiles(this, this.fileSystem);
+  async list(signal?: AbortSignal): Promise<VaultListResult> {
+    return listNoteFiles(this, this.fileSystem, signal);
   }
 
   /** Searches every supported note's raw text for case-insensitive line matches. */
   async search(query: string, signal?: AbortSignal): Promise<VaultSearchResult> {
+    const searched = await this.scan(query, signal);
+    return Result.isError(searched) ? searched : Result.ok(searched.value.results);
+  }
+
+  /** Searches only through the requested page and one lookahead match; returns input, discovery, or read errors. */
+  async searchPage(query: string, page: SearchPageOptions, signal?: AbortSignal): Promise<VaultSearchPageResult> {
+    if (
+      !Number.isSafeInteger(page.offset) ||
+      page.offset < 1 ||
+      !Number.isSafeInteger(page.limit) ||
+      page.limit < 1 ||
+      page.limit > 500
+    ) {
+      return Result.err(
+        new NoteValidationError({
+          reason: "pagination",
+          message: "Search offset must be a positive safe integer and limit must be between 1 and 500.",
+        })
+      );
+    }
+    return this.scan(query, signal, page);
+  }
+
+  /** Shares matching semantics between complete UI search and bounded tool pages without retaining skipped matches. */
+  private async scan(query: string, signal?: AbortSignal, page?: SearchPageOptions): Promise<VaultSearchPageResult> {
     const normalized = query.trim().toLowerCase();
     if (!normalized)
       return Result.err(new NoteValidationError({ reason: "query", message: "query must not be empty." }));
 
-    const files = await this.list();
+    const files = await this.list(signal);
     if (Result.isError(files)) return files;
 
     const results: NoteSearchResult[] = [];
+    let skipped = 0;
+    let retained = 0;
     for (const note of files.value) {
       if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
 
@@ -103,12 +145,19 @@ export class Vault extends VaultRoot {
 
       const matches: NoteSearchMatch[] = [];
       for (const [index, line] of content.value.content.split("\n").entries()) {
-        if (line.toLowerCase().includes(normalized)) matches.push({ line: index + 1, text: line });
+        if (!line.toLowerCase().includes(normalized)) continue;
+        if (page && skipped++ < page.offset - 1) continue;
+        if (page && retained === page.limit) {
+          if (matches.length > 0) results.push({ note: content.value.note, matches });
+          return Result.ok({ results, hasMore: true });
+        }
+        matches.push({ line: index + 1, text: line });
+        retained++;
       }
       if (matches.length > 0) results.push({ note: content.value.note, matches });
     }
 
-    return Result.ok(results);
+    return Result.ok({ results, hasMore: false });
   }
 
   /** Resolves, validates, and reads one supported note from the vault. */

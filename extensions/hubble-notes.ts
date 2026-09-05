@@ -720,11 +720,14 @@ async function checkDiscoveryDirectory(directory: string): Promise<ResultType<vo
 /** Recursively discovers supported Hubble notes while ignoring symlinks. */
 export async function listNoteFiles(
   vault: VaultRoot,
-  fileSystem: NoteFileSystem = nodeFileSystem
+  fileSystem: NoteFileSystem = nodeFileSystem,
+  signal?: AbortSignal
 ): Promise<ResultType<NoteReference[], DiscoveryError>> {
+  throwIfAborted(signal);
   const files: NoteReference[] = [];
   /** Walks one vault directory and adds its supported note files to the discovery list. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
+    throwIfAborted(signal);
     const checked = await checkDiscoveryDirectory(directory);
     if (Result.isError(checked)) return checked;
     const entries = await Result.tryPromise({
@@ -741,6 +744,7 @@ export async function listNoteFiles(
     if (Result.isError(entries)) return MissingFileError.is(entries.error.cause) ? Result.ok() : entries;
 
     for (const entry of entries.value) {
+      throwIfAborted(signal);
       if (entry.isSymbolicLink()) continue;
       const absolute = join(directory, entry.name);
       if (entry.isDirectory()) {

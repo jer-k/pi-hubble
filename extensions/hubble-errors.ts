@@ -62,7 +62,7 @@ export class VaultPathError extends TaggedError("VaultPathError")<{
 }> {}
 
 /** Stable classifications for invalid note input. */
-export type NoteValidationReason = "title" | "query" | "filename" | "format";
+export type NoteValidationReason = "title" | "query" | "filename" | "format" | "pagination";
 /** Note input could not be parsed into a valid creation or search request. */
 export class NoteValidationError extends TaggedError("NoteValidationError")<{
   readonly reason: NoteValidationReason;
