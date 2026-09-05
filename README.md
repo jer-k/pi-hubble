@@ -136,6 +136,8 @@ reference, so the note is attached to the current prompt.
 
 ## Development
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the module map, tool routes, and note-write flow.
+
 Run the unit test suite and checks with:
 
 ```bash
