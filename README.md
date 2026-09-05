@@ -75,7 +75,8 @@ The extension registers these Pi tools:
   returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
   Capped results include a continuation notice and `nextOffset`; pass that value
   as the 1-based matching-line `offset` to retrieve the next page. Pages reflect
-  the current vault, so concurrent note changes can shift their offsets.
+  the current vault, so concurrent note changes can shift their offsets. Tool
+  searches stop after the page and one lookahead match, retaining only that page.
 - `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
 - `hubble_create(title, content, filename?, folder?, format?)` creates a new
