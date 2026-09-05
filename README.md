@@ -44,6 +44,10 @@ npm run sync:skills
 npm run check:skills
 ```
 
+Sync stages and validates upstream before installing a sibling copy. If the
+installation rename fails, the previous skills are restored. If restoration
+also fails, the command reports the retained backup path for recovery.
+
 The weekly `sync-hubble-skills` GitHub Actions workflow runs the same sync and opens or updates a pull request when upstream changes.
 
 ## Vault configuration
