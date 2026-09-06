@@ -116,16 +116,22 @@ const deferToSchemaValidation: HubbleEditArgumentPreparer = (input) => {
 
 /** Normalizes model-generated edit arguments before Typebox validates the public schema. */
 const prepareHubbleEditArguments: HubbleEditArgumentPreparer = (input) => {
-  if (!Value.Check(UnpreparedHubbleEditParameters, input)) return deferToSchemaValidation(input);
+  if (!Value.Check(UnpreparedHubbleEditParameters, input)) {
+    return deferToSchemaValidation(input);
+  }
 
   const args = { ...input };
+
   if (Value.Check(StringValue, args.edits)) {
     const serializedEdits = args.edits;
     const parsed = Result.try({
       try: () => JSON.parse(serializedEdits),
       catch: () => undefined,
     });
-    if (Result.isOk(parsed) && Array.isArray(parsed.value)) args.edits = parsed.value;
+
+    if (Result.isOk(parsed) && Array.isArray(parsed.value)) {
+      args.edits = parsed.value;
+    }
   }
 
   if (!Value.Check(StringValue, args.oldText) || !Value.Check(StringValue, args.newText)) {
@@ -140,13 +146,18 @@ const prepareHubbleEditArguments: HubbleEditArgumentPreparer = (input) => {
 
 /** Returns a successful Result value or raises its Hubble failure for the tool API. */
 function unwrap<T, E extends HubbleFailure>(result: ResultType<T, E>): T {
-  if (Result.isError(result)) throwHubbleError(result.error);
+  if (Result.isError(result)) {
+    throwHubbleError(result.error);
+  }
+
   return result.value;
 }
 
 /** Stops a tool operation immediately when its cancellation signal is aborted. */
 function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
+  }
 }
 
 /** Shapes text and typed metadata into the response format used by Hubble tools. */
@@ -160,14 +171,19 @@ export async function truncateOutput(
   fileSystem: OutputFileSystem = nodeFileSystem
 ): Promise<ResultType<TruncatedOutput, OutputPersistenceError>> {
   const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
-  if (!truncation.truncated) return Result.ok({ text: truncation.content, truncated: false });
+
+  if (!truncation.truncated) {
+    return Result.ok({ text: truncation.content, truncated: false });
+  }
 
   const directory = await Result.tryPromise({
     try: () => fileSystem.mkdtemp(join(tmpdir(), "pi-hubble-")),
     catch: (cause) => new OutputPersistenceError({ cause, message: "Could not persist the full Hubble tool output." }),
   });
 
-  if (Result.isError(directory)) return directory;
+  if (Result.isError(directory)) {
+    return directory;
+  }
 
   const fullOutputPath = join(directory.value, "output.txt");
   const persisted = await withFileMutationQueue(fullOutputPath, () =>
@@ -178,7 +194,9 @@ export async function truncateOutput(
     })
   );
 
-  if (Result.isError(persisted)) return persisted;
+  if (Result.isError(persisted)) {
+    return persisted;
+  }
 
   return Result.ok({
     text: `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`,
@@ -218,14 +236,18 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
-      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
 
       const offset = params.offset ?? 1;
       const searched = unwrap(
         await vault.value.searchPage(params.query, { offset, limit: params.limit ?? 100 }, signal)
       );
       const formatted = formatSearchResults(searched.results);
-      if (formatted.count === 0)
+
+      if (formatted.count === 0) {
         return noteResult(
           offset === 1 ? "No Hubble notes matched the query." : "No more Hubble matches at this offset.",
           {
@@ -233,6 +255,8 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
             matchCount: 0,
           }
         );
+      }
+
       const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
 
       const nextOffset = searched.hasMore ? offset + formatted.count : undefined;
@@ -266,7 +290,10 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
-      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
 
       const read = unwrap(await vault.value.read(params.path));
       const allLines = read.content.split("\n");
@@ -301,7 +328,10 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
-      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
 
       const created = unwrap(
         await vault.value.create(params.title, params.content, params.folder, params.format, params.filename)
@@ -326,10 +356,15 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       if (title && content !== undefined) {
         const document = buildNewNoteDocument(title, content, format).replaceAll("\r", "").replaceAll("\t", "   ");
         const highlighted = highlightCode(document, format);
-        while (highlighted.at(-1) === "") highlighted.pop();
+
+        while (highlighted.at(-1) === "") {
+          highlighted.pop();
+        }
+
         const visible = context.expanded ? highlighted : highlighted.slice(0, CREATE_PREVIEW_LINES);
         const remaining = highlighted.length - visible.length;
         output += `\n\n${visible.join("\n")}`;
+
         if (remaining > 0) {
           output += `${theme.fg("muted", `\n... (${remaining} more lines, ${highlighted.length} total,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
         }
@@ -341,6 +376,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     /** Renders the resolved note path after success or the structured tool error after failure. */
     renderResult(result, _options, theme, context) {
       const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
+
       if (context.isError) {
         const message = result.content
           .filter((item) => item.type === "text")
@@ -380,7 +416,10 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
-      if (Result.isError(vault)) throwHubbleError(vault.error);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
 
       const edited = unwrap(await vault.value.edit(params.path, params.edits, signal));
       return noteResult(`Updated Hubble note: ${edited.relative}`, {

@@ -54,21 +54,29 @@ export type GetVault = (context: RootContext) => Promise<ResultType<Vault, Confi
 /** Expands a configured vault path relative to the current working directory. */
 function expandPath(value: string, cwd: string, source: string): ResultType<string, InvalidConfigError> {
   const trimmed = value.trim();
+
   if (!trimmed) {
     return Result.err(
       new InvalidConfigError({ path: source, input: value, message: "Hubble vault path must not be empty." })
     );
   }
 
-  if (trimmed === "~") return Result.ok(homedir());
-  if (trimmed.startsWith("~/")) return Result.ok(resolve(homedir(), trimmed.slice(2)));
+  if (trimmed === "~") {
+    return Result.ok(homedir());
+  }
+
+  if (trimmed.startsWith("~/")) {
+    return Result.ok(resolve(homedir(), trimmed.slice(2)));
+  }
 
   return Result.ok(isAbsolute(trimmed) ? trimmed : resolve(cwd, trimmed));
 }
 
 /** Parses and normalizes the optional --hubble-dir flag value. */
 function parseStringFlag(value: HubbleDirFlagInput): ResultType<string | undefined, InvalidConfigError> {
-  if (value === undefined || value === null || value === false) return Result.ok(undefined);
+  if (value === undefined || value === null || value === false) {
+    return Result.ok(undefined);
+  }
 
   if (!Value.Check(StringValue, value)) {
     return Result.err(
@@ -95,8 +103,15 @@ async function readConfiguredRoot(
 
   if (Result.isError(source)) {
     const error = source.error;
-    if (MissingFileError.is(error)) return Result.ok(undefined);
-    if (ConfigReadError.is(error)) return Result.err(error);
+
+    if (MissingFileError.is(error)) {
+      return Result.ok(undefined);
+    }
+
+    if (ConfigReadError.is(error)) {
+      return Result.err(error);
+    }
+
     return Result.err(
       new ConfigReadError({ path: configPath, cause: error, message: "Could not read the Hubble configuration." })
     );
@@ -112,7 +127,9 @@ async function readConfiguredRoot(
       }),
   });
 
-  if (Result.isError(parsed)) return parsed;
+  if (Result.isError(parsed)) {
+    return parsed;
+  }
 
   if (!Value.Check(ConfigObject, parsed.value)) {
     return Result.err(
@@ -121,7 +138,10 @@ async function readConfiguredRoot(
   }
 
   const root = parsed.value.root;
-  if (root === undefined) return Result.ok(undefined);
+
+  if (root === undefined) {
+    return Result.ok(undefined);
+  }
 
   if (!Value.Check(StringValue, root)) {
     return Result.err(
@@ -143,21 +163,35 @@ export async function resolveHubbleRoot(
   projectTrusted = true
 ): Promise<ResultType<string, ConfigError>> {
   const cliRoot = parseStringFlag(cliValue);
-  if (Result.isError(cliRoot)) return cliRoot;
-  if (cliRoot.value !== undefined) return expandPath(cliRoot.value, cwd, "--hubble-dir");
+
+  if (Result.isError(cliRoot)) {
+    return cliRoot;
+  }
+
+  if (cliRoot.value !== undefined) {
+    return expandPath(cliRoot.value, cwd, "--hubble-dir");
+  }
 
   const globalPath = resolve(getAgentDir(), CONFIG_FILENAME);
   const localPath = resolve(cwd, CONFIG_DIR_NAME, CONFIG_FILENAME);
   const globalRoot = await readConfiguredRoot(globalPath);
-  if (Result.isError(globalRoot)) return globalRoot;
+
+  if (Result.isError(globalRoot)) {
+    return globalRoot;
+  }
 
   let localRoot: ResultType<string | undefined, ConfigError> = Result.ok(undefined);
+
   if (projectTrusted) {
     localRoot = await readConfiguredRoot(localPath);
-    if (Result.isError(localRoot)) return localRoot;
+
+    if (Result.isError(localRoot)) {
+      return localRoot;
+    }
   }
 
   const configuredRoot = localRoot.value ?? globalRoot.value;
+
   if (configuredRoot === undefined) {
     const message = "Hubble vault is not configured. Set a Hubble root or pass --hubble-dir /path/to/vault.";
     return Result.err(

@@ -26,6 +26,7 @@ test("returns a tagged validation error for overlapping exact edits", () => {
   );
 
   expect(result.status).toBe("error");
+
   if (result.status === "error") {
     expect(result.error._tag).toBe("EditValidationError");
     expect(result.error.reason).toBe("overlap");

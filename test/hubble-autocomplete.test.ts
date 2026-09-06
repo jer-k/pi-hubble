@@ -69,7 +69,11 @@ test("returns no suggestions for expected failures but propagates defects", asyn
     expectedFactory = factory;
   };
   expectedFailure.getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
-  if (expectedFactory === undefined) throw new Error("Expected autocomplete provider registration");
+
+  if (expectedFactory === undefined) {
+    throw new Error("Expected autocomplete provider registration");
+  }
+
   const expectedProvider = expectedFactory(current);
 
   expect(await expectedProvider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal })).toEqual({
@@ -87,7 +91,11 @@ test("returns no suggestions for expected failures but propagates defects", asyn
     defectFactory = factory;
   };
   defect.getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
-  if (defectFactory === undefined) throw new Error("Expected autocomplete provider registration");
+
+  if (defectFactory === undefined) {
+    throw new Error("Expected autocomplete provider registration");
+  }
+
   const defectProvider = defectFactory(current);
 
   await expect(
@@ -118,7 +126,11 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
     ui: { addAutocompleteProvider: (factory: AutocompleteProviderFactory) => (providerFactory = factory) },
   };
   getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
-  if (providerFactory === undefined) throw new Error("Expected autocomplete provider registration");
+
+  if (providerFactory === undefined) {
+    throw new Error("Expected autocomplete provider registration");
+  }
+
   const provider = providerFactory(current);
   expect(await provider.getSuggestions(["text"], 0, 4, { signal: new AbortController().signal })).toEqual({
     prefix: "",
@@ -126,7 +138,11 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
   });
 
   const suggestions = await provider.getSuggestions(["@hubble/"], 0, 8, { signal: new AbortController().signal });
-  if (suggestions === null) throw new Error("Expected Hubble autocomplete suggestions");
+
+  if (suggestions === null) {
+    throw new Error("Expected Hubble autocomplete suggestions");
+  }
+
   expect(suggestions.prefix).toBe("@hubble/");
   expect(suggestions.items.map((item: { label: string }) => item.label)).toEqual([
     "@hubble/alpha.md",
@@ -149,7 +165,11 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
     ],
   });
   const firstSuggestion = suggestions.items.at(0);
-  if (firstSuggestion === undefined) throw new Error("Expected at least one Hubble suggestion");
+
+  if (firstSuggestion === undefined) {
+    throw new Error("Expected at least one Hubble suggestion");
+  }
+
   expect(provider.applyCompletion(["@hubble/"], 0, 8, firstSuggestion, "@hubble/")).toEqual({
     lines: ["done"],
     cursorLine: 0,
@@ -176,11 +196,18 @@ test("caches discovery briefly, refreshes creations, and rejects unsafe cached a
   const opened = await openVault(root, {
     ...fs,
     async readdir(path, options) {
-      if (!allowScan) throw new Error("unexpected rescan");
+      if (!allowScan) {
+        throw new Error("unexpected rescan");
+      }
+
       return fs.readdir(path, options);
     },
   });
-  if (opened.status === "error") throw opened.error;
+
+  if (opened.status === "error") {
+    throw opened.error;
+  }
+
   const { pi, getSessionStart } = createPi();
   registerHubbleAutocomplete(
     pi,
@@ -197,7 +224,11 @@ test("caches discovery briefly, refreshes creations, and rejects unsafe cached a
     },
   };
   getSessionStart()?.(sessionStartEvent, testCast<typeof ctx, ExtensionContext>(ctx));
-  if (!factory) throw new Error("Expected provider");
+
+  if (!factory) {
+    throw new Error("Expected provider");
+  }
+
   const provider = factory({
     getSuggestions: async () => null,
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),

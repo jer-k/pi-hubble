@@ -34,13 +34,21 @@ test.each(["success", "failure"] as const)("coordinates creation with the destin
           async writeFile(body, encoding) {
             opened.resolve();
             await release.promise;
-            if (outcome === "failure") throw cause;
+
+            if (outcome === "failure") {
+              throw cause;
+            }
+
             await handle.writeFile(body, encoding);
           },
         };
       },
     });
-    if (result.status === "error") throw result.error;
+
+    if (result.status === "error") {
+      throw result.error;
+    }
+
     const creating = result.value.create("Note", "body");
     await opened.promise;
     const target = join(root, "note.md");
@@ -59,6 +67,7 @@ test.each(["success", "failure"] as const)("coordinates creation with the destin
     const created = await creating;
     const observed = await competing;
     expect(observed.startedAfterRelease).toBe(true);
+
     if (outcome === "success") {
       expect(created.status).toBe("ok");
       expect(observed.content).toBe("# Note\n\nbody");
@@ -91,18 +100,30 @@ test.each(["save", "replace", "delete", "unchanged"] as const)(
             writeFile: handle.writeFile.bind(handle),
             async sync() {
               await handle.sync();
-              if (action === "save") await fs.writeFile(path, "Hubble save");
+
+              if (action === "save") {
+                await fs.writeFile(path, "Hubble save");
+              }
+
               if (action === "replace") {
                 await fs.writeFile(join(root, "replacement"), "old");
                 await fs.rename(join(root, "replacement"), path);
               }
-              if (action === "delete") await fs.unlink(path);
+
+              if (action === "delete") {
+                await fs.unlink(path);
+              }
             },
           };
         },
       });
-      if (opened.status === "error") throw opened.error;
+
+      if (opened.status === "error") {
+        throw opened.error;
+      }
+
       const result = await opened.value.edit("note.md", [{ oldText: "old", newText: "new" }]);
+
       if (action === "unchanged") {
         expect(result.status).toBe("ok");
         expect(await fs.readFile(path, "utf8")).toBe("new");

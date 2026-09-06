@@ -26,10 +26,16 @@ interface HubbleCommandSelection {
 function parseHubbleCommand(args: string): HubbleCommandSelection {
   const trimmed = args.trim();
   const searchMatch = trimmed.match(/^search(?:\s+(.+))?$/iu);
-  if (searchMatch) return { query: searchMatch[1]?.trim() ?? "", searchMode: "contents" };
+
+  if (searchMatch) {
+    return { query: searchMatch[1]?.trim() ?? "", searchMode: "contents" };
+  }
 
   const findMatch = trimmed.match(/^find(?:\s+(.+))?$/iu);
-  if (findMatch) return { query: findMatch[1]?.trim() ?? "", searchMode: "filename" };
+
+  if (findMatch) {
+    return { query: findMatch[1]?.trim() ?? "", searchMode: "filename" };
+  }
 
   return { query: trimmed, searchMode: "filename" };
 }
@@ -60,7 +66,10 @@ interface ExtractedValueFlag {
 /** Removes one named value flag from command text and returns its value. */
 function extractValueFlag(remainder: string, name: string): ExtractedValueFlag {
   const flag = remainder.match(new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(?:"([^"]*)"|'([^']*)'|(\\S+))`, "u"));
-  if (flag?.index === undefined) return { remainder };
+
+  if (flag?.index === undefined) {
+    return { remainder };
+  }
 
   return {
     remainder: `${remainder.slice(0, flag.index)} ${remainder.slice(flag.index + flag[0].length)}`.trim(),
@@ -71,19 +80,33 @@ function extractValueFlag(remainder: string, name: string): ExtractedValueFlag {
 /** Parses the /hubble new syntax, including optional folder and format flags. */
 function parseNewCommand(args: string): NewCommandSelection | undefined {
   const match = args.trim().match(/^new(?:\s+([\s\S]*))?$/iu);
-  if (!match) return undefined;
+
+  if (!match) {
+    return undefined;
+  }
 
   const folder = extractValueFlag(match[1]?.trim() ?? "", "folder");
   const format = extractValueFlag(folder.remainder, "format");
   const title = unquote(format.remainder);
   const folderValue = folder.value;
   const formatValue = format.value;
-  if (folderValue === undefined && formatValue === undefined) return { title };
-  if (folderValue === undefined && formatValue !== undefined) return { title, format: formatValue };
-  if (formatValue === undefined && folderValue !== undefined) return { title, folder: folderValue };
+
+  if (folderValue === undefined && formatValue === undefined) {
+    return { title };
+  }
+
+  if (folderValue === undefined && formatValue !== undefined) {
+    return { title, format: formatValue };
+  }
+
+  if (formatValue === undefined && folderValue !== undefined) {
+    return { title, folder: folderValue };
+  }
+
   if (folderValue !== undefined && formatValue !== undefined) {
     return { title, folder: folderValue, format: formatValue };
   }
+
   throw new Error("Hubble new-command option parsing reached an impossible state.");
 }
 
@@ -100,12 +123,19 @@ async function selectNotes(
 ): Promise<ResultType<NoteReference[], HubbleFailure>> {
   if (searchMode === "contents") {
     const results = await vault.search(query);
-    if (Result.isError(results)) return results;
+
+    if (Result.isError(results)) {
+      return results;
+    }
+
     return Result.ok(results.value.map((result) => result.note));
   }
 
   const files = await vault.list();
-  if (Result.isError(files)) return files;
+
+  if (Result.isError(files)) {
+    return files;
+  }
 
   return Result.ok(query ? fuzzyFilter(files.value, query, (file) => file.relative) : files.value);
 }
@@ -121,25 +151,41 @@ async function handleNewNote(
     ctx.ui.notify("/hubble new requires interactive UI mode.", "warning");
     return;
   }
+
   const parsed = parseNewCommand(args);
-  if (!parsed) return;
+
+  if (!parsed) {
+    return;
+  }
+
   const requestedFormat = parsed.format?.toLowerCase() ?? "markdown";
+
   if (!isNoteFormat(requestedFormat)) {
     ctx.ui.notify("Hubble note format must be 'markdown' or 'html'.", "warning");
     return;
   }
+
   let title = parsed.title.trim();
 
   if (!title) {
     const enteredTitle = await ctx.ui.input("Hubble note title", "Leave blank to let the agent choose");
-    if (enteredTitle === undefined) return;
+
+    if (enteredTitle === undefined) {
+      return;
+    }
+
     title = enteredTitle.trim();
   }
 
   let folder = parsed.folder;
+
   if (folder === undefined) {
     const enteredFolder = await ctx.ui.input("Hubble folder", "Optional vault-relative folder; blank for vault root");
-    if (enteredFolder === undefined) return;
+
+    if (enteredFolder === undefined) {
+      return;
+    }
+
     folder = enteredFolder.trim();
   }
 
@@ -148,6 +194,7 @@ async function handleNewNote(
       ctx.ui.notify("The agent is busy. Try /hubble new again when it is idle.", "warning");
       return;
     }
+
     const folderInstruction = folder
       ? ` Use the vault-relative folder ${JSON.stringify(folder)}.`
       : " Use the vault root.";
@@ -163,12 +210,14 @@ async function handleNewNote(
   }
 
   const vault = await getVault(ctx);
+
   if (Result.isError(vault)) {
     ctx.ui.notify(vault.error.message, "error");
     return;
   }
 
   const created = await vault.value.create(title, "", folder, requestedFormat);
+
   if (Result.isError(created)) {
     ctx.ui.notify(created.error.message, "error");
     return;
@@ -207,12 +256,14 @@ export function registerHubbleCommand(pi: ExtensionAPI, getVault: GetVault): voi
 
       const { query, searchMode } = parseHubbleCommand(args);
       const vault = await getVault(ctx);
+
       if (Result.isError(vault)) {
         ctx.ui.notify(vault.error.message, "error");
         return;
       }
 
       const notes = await selectNotes(vault.value, query, searchMode);
+
       if (Result.isError(notes)) {
         ctx.ui.notify(notes.error.message, "error");
         return;

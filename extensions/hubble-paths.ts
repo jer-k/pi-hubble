@@ -81,7 +81,9 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
         }),
     });
 
-    if (Result.isError(rootStat)) return rootStat;
+    if (Result.isError(rootStat)) {
+      return rootStat;
+    }
 
     if (!rootStat.value.isDirectory()) {
       return Result.err(
@@ -96,10 +98,13 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
     return Result.ok(resolved.value);
   }
 
-  if (!MissingFileError.is(resolved.error.cause)) return resolved;
+  if (!MissingFileError.is(resolved.error.cause)) {
+    return resolved;
+  }
 
   const missingParts: string[] = [];
   let ancestor = resolvedRoot;
+
   while (true) {
     const resolvedAncestor = await Result.tryPromise({
       try: () => realpath(ancestor),
@@ -124,7 +129,9 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
           }),
       });
 
-      if (Result.isError(ancestorStat)) return ancestorStat;
+      if (Result.isError(ancestorStat)) {
+        return ancestorStat;
+      }
 
       if (!ancestorStat.value.isDirectory()) {
         return Result.err(
@@ -139,9 +146,12 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
       return Result.ok(missingParts.reduce((path, part) => join(path, part), resolvedAncestor.value));
     }
 
-    if (!MissingFileError.is(resolvedAncestor.error.cause)) return resolvedAncestor;
+    if (!MissingFileError.is(resolvedAncestor.error.cause)) {
+      return resolvedAncestor;
+    }
 
     const parent = dirname(ancestor);
+
     if (parent === ancestor) {
       return Result.err(
         new VaultOpenError({
@@ -152,6 +162,7 @@ export async function canonicalVaultRoot(root: string): Promise<ResultType<strin
         })
       );
     }
+
     missingParts.unshift(basename(ancestor));
     ancestor = parent;
   }
@@ -164,8 +175,12 @@ async function assertExistingAncestorInside(
   input: string
 ): Promise<ResultType<void, VaultPathError>> {
   let ancestor = dirname(candidate);
+
   while (true) {
-    if (!isInside(root, ancestor)) return Result.err(pathError(input, "escape", "Hubble path escapes the vault."));
+    if (!isInside(root, ancestor)) {
+      return Result.err(pathError(input, "escape", "Hubble path escapes the vault."));
+    }
+
     const resolvedAncestor = await Result.tryPromise({
       try: () => realpath(ancestor),
       catch: (cause) =>
@@ -183,15 +198,22 @@ async function assertExistingAncestorInside(
         : Result.err(pathError(input, "symlink-escape", "Hubble path escapes the vault through a symlink."));
     }
 
-    if (!MissingFileError.is(resolvedAncestor.error.cause)) return Result.err(resolvedAncestor.error);
+    if (!MissingFileError.is(resolvedAncestor.error.cause)) {
+      return Result.err(resolvedAncestor.error);
+    }
+
     // A canonicalized Vault may legitimately have a missing root. Let note
     // operations resolve to the filesystem so they can return NoteNotFound.
 
-    if (ancestor === root) return Result.ok();
+    if (ancestor === root) {
+      return Result.ok();
+    }
 
     const parent = dirname(ancestor);
-    if (parent === ancestor)
+
+    if (parent === ancestor) {
       return Result.err(pathError(input, "filesystem", "Could not resolve the requested Hubble path."));
+    }
 
     ancestor = parent;
   }
@@ -204,6 +226,7 @@ async function resolveContained(
   policy: "note" | "folder"
 ): Promise<VaultPathResult> {
   const normalized = policy === "note" && userPath.startsWith("@") ? userPath.slice(1) : userPath.trim();
+
   if (!normalized) {
     return policy === "folder"
       ? Result.ok(containedPath(vault.root, ""))
@@ -221,8 +244,10 @@ async function resolveContained(
   }
 
   const absolute = resolve(vault.root, normalized);
-  if (!isInside(vault.root, absolute))
+
+  if (!isInside(vault.root, absolute)) {
     return Result.err(pathError(normalized, "escape", "Hubble path escapes the vault."));
+  }
 
   const resolvedTarget = await Result.tryPromise({
     try: () => realpath(absolute),
@@ -236,10 +261,15 @@ async function resolveContained(
   });
 
   if (Result.isError(resolvedTarget)) {
-    if (!MissingFileError.is(resolvedTarget.error.cause)) return resolvedTarget;
+    if (!MissingFileError.is(resolvedTarget.error.cause)) {
+      return resolvedTarget;
+    }
 
     const parent = await assertExistingAncestorInside(vault.root, absolute, normalized);
-    if (Result.isError(parent)) return parent;
+
+    if (Result.isError(parent)) {
+      return parent;
+    }
   } else if (!isInside(vault.root, resolvedTarget.value)) {
     return Result.err(pathError(normalized, "symlink-escape", `Hubble ${policy} escapes the vault through a symlink.`));
   }
@@ -256,10 +286,13 @@ async function resolveContained(
         ),
     });
 
-    if (Result.isError(targetStat)) return targetStat;
+    if (Result.isError(targetStat)) {
+      return targetStat;
+    }
 
-    if (!targetStat.value.isDirectory())
+    if (!targetStat.value.isDirectory()) {
       return Result.err(pathError(normalized, "not-directory", "The requested Hubble folder is not a directory."));
+    }
   }
 
   const canonical = Result.isOk(resolvedTarget) ? resolvedTarget.value : absolute;

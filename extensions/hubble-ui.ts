@@ -13,7 +13,10 @@ import type { NoteReference } from "./hubble-vault.ts";
 
 /** Formats a filesystem path as an escaped @ attachment for the Pi editor. */
 export function attachmentValue(path: string): string {
-  if (path.includes(" ") || path.includes('"')) return `@"${path.replaceAll('"', '\\"')}"`;
+  if (path.includes(" ") || path.includes('"')) {
+    return `@"${path.replaceAll('"', '\\"')}"`;
+  }
+
   return `@${path}`;
 }
 
