@@ -149,16 +149,30 @@ export async function readVaultFile(
     try: () => fileSystem.access(path.absolute, constants.R_OK),
     catch: (cause) => noteReadError(path, cause),
   });
-  if (Result.isError(accessible)) return accessible;
+
+  if (Result.isError(accessible)) {
+    return accessible;
+  }
+
   const fileStat = await Result.tryPromise({
     try: () => fileSystem.stat(path.absolute),
     catch: (cause) => noteReadError(path, cause),
   });
-  if (Result.isError(fileStat)) return fileStat;
-  if (!fileStat.value.isFile())
+
+  if (Result.isError(fileStat)) {
+    return fileStat;
+  }
+
+  if (!fileStat.value.isFile()) {
     return Result.err(
-      new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." })
+      new NoteReadError({
+        path: path.relative,
+        cause: undefined,
+        message: "The requested Hubble path is not a file.",
+      })
     );
+  }
+
   return withFileMutationQueue(path.absolute, () =>
     Result.tryPromise({
       try: () => fileSystem.readFile(path.absolute, "utf8"),

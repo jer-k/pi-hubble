@@ -1,5 +1,84 @@
 # pi-hubble
 
+## Whitespace
+
+Use whitespace to make the structure of code immediately apparent. Group related
+statements together and separate distinct phases of control flow with blank lines.
+Avoid both dense blocks and unnecessary blank lines.
+
+Prefer formatting that makes operations, early returns, and side effects easy to scan.
+
+Bad example
+
+```ts
+export async function readVaultFile(path: HubblePath, fileSystem: NoteFileSystem = nodeFileSystem): Promise<NoteReadResult> {
+  const accessible = await Result.tryPromise({
+    try: () => fileSystem.access(path.absolute, constants.R_OK),
+    catch: (cause) => noteReadError(path, cause),
+  });
+  if (Result.isError(accessible)) return accessible;
+  const fileStat = await Result.tryPromise({
+    try: () => fileSystem.stat(path.absolute),
+    catch: (cause) => noteReadError(path, cause),
+  });
+  if (Result.isError(fileStat)) return fileStat;
+  if (!fileStat.value.isFile())
+    return Result.err(
+      new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." }),
+    );
+  return withFileMutationQueue(path.absolute, () =>
+    Result.tryPromise({
+      try: () => fileSystem.readFile(path.absolute, "utf8"),
+      catch: (cause) => noteReadError(path, cause),
+    }),
+  );
+}
+```
+
+Good example
+
+```ts
+export async function readVaultFile(
+  path: HubblePath,
+  fileSystem: NoteFileSystem = nodeFileSystem,
+): Promise<NoteReadResult> {
+  const accessible = await Result.tryPromise({
+    try: () => fileSystem.access(path.absolute, constants.R_OK),
+    catch: (cause) => noteReadError(path, cause),
+  });
+
+  if (Result.isError(accessible)) {
+    return accessible;
+  }
+
+  const fileStat = await Result.tryPromise({
+    try: () => fileSystem.stat(path.absolute),
+    catch: (cause) => noteReadError(path, cause),
+  });
+
+  if (Result.isError(fileStat)) {
+    return fileStat;
+  }
+
+  if (!fileStat.value.isFile()) {
+    return Result.err(
+      new NoteReadError({
+        path: path.relative,
+        cause: undefined,
+        message: "The requested Hubble path is not a file.",
+      })
+    );
+  }
+
+  return withFileMutationQueue(path.absolute, () =>
+    Result.tryPromise({
+      try: () => fileSystem.readFile(path.absolute, "utf8"),
+      catch: (cause) => noteReadError(path, cause),
+    }),
+  );
+}
+```
+
 ## Error handling
 
 Represent expected and recoverable errors as `Result<T, E>` values using
