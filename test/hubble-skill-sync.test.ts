@@ -18,12 +18,15 @@ async function fixture() {
   await fs.mkdir(join(upstreamRepository, "skills", "create-html-app"), { recursive: true });
   await fs.mkdir(repositoryRoot);
   await fs.writeFile(join(upstreamRepository, "skills", "create-html-app", "SKILL.md"), "upstream skill");
+
   for (const args of [
     ["init", "-b", "main"],
     ["add", "."],
     ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture"],
-  ])
+  ]) {
     await exec("git", args, { cwd: upstreamRepository });
+  }
+
   return {
     repositoryRoot,
     upstreamRepository,
@@ -49,11 +52,14 @@ test("syncs and checks a real local upstream without network access", async () =
 
 test("returns structured argument, Git, and filesystem failures with causes", async () => {
   await using f = await fixture();
-  for (const args of [["--unknown"], ["--ref"], ["--ref", "--check"]])
+
+  for (const args of [["--unknown"], ["--ref"], ["--ref", "--check"]]) {
     expect(await syncHubbleSkills(args, f)).toMatchObject({
       status: "error",
       error: { _tag: "SkillSyncError", reason: "arguments" },
     });
+  }
+
   expect(await syncHubbleSkills(["--ref", "missing"], f)).toMatchObject({
     status: "error",
     error: { _tag: "SkillSyncError", reason: "git", cause: expect.any(Error) },
@@ -111,8 +117,11 @@ test("preserves both Git and temporary cleanup failures", async () => {
       },
     });
     expect(result.status).toBe("error");
-    if (result.status !== "error" || !(result.error.cause instanceof AggregateError))
+
+    if (result.status !== "error" || !(result.error.cause instanceof AggregateError)) {
       throw new Error("Expected aggregate cleanup failure");
+    }
+
     expect(result.error.cause.errors).toMatchObject([
       { _tag: "SkillSyncError", reason: "git" },
       { _tag: "SkillSyncError", cause: cleanupCause },
@@ -138,23 +147,39 @@ test.each(["copy", "install", "rollback"] as const)("preserves the previous skil
           await fs.writeFile(join(String(to), "partial"), "incomplete");
           throw cause;
         }
+
         await fs.cp(from, to, options);
       },
       async rename(from, to) {
-        if (String(from).endsWith("incoming")) throw cause;
-        if (failure === "rollback" && String(from).endsWith("previous")) throw rollbackCause;
+        if (String(from).endsWith("incoming")) {
+          throw cause;
+        }
+
+        if (failure === "rollback" && String(from).endsWith("previous")) {
+          throw rollbackCause;
+        }
+
         await fs.rename(from, to);
       },
     },
   });
   expect(result.status).toBe("error");
-  if (result.status !== "error") throw new Error("Expected install failure");
+
+  if (result.status !== "error") {
+    throw new Error("Expected install failure");
+  }
+
   if (failure === "rollback") {
     expect(result.error.reason).toBe("rollback");
     const backup = result.error.path;
-    if (!backup) throw new Error("Expected retained backup path");
+
+    if (!backup) {
+      throw new Error("Expected retained backup path");
+    }
+
     expect(await fs.readFile(join(backup, "previous.md"), "utf8")).toBe("previous bytes");
     expect(result.error.cause).toBeInstanceOf(AggregateError);
+
     if (result.error.cause instanceof AggregateError) {
       expect(result.error.cause.errors).toMatchObject([{ cause }, { cause: rollbackCause }]);
     }
@@ -186,7 +211,10 @@ test("keeps the recovery path visible when rollback and temporary cleanup both f
       fileSystem: {
         ...fs,
         async rename(from, to) {
-          if (String(from).endsWith("incoming") || String(from).endsWith("previous")) throw new Error("rename failed");
+          if (String(from).endsWith("incoming") || String(from).endsWith("previous")) {
+            throw new Error("rename failed");
+          }
+
           await fs.rename(from, to);
         },
         async rm(path, options) {
@@ -194,17 +222,24 @@ test("keeps the recovery path visible when rollback and temporary cleanup both f
             failedCleanup.push(String(path));
             throw new Error("cleanup failed");
           }
+
           await fs.rm(path, options);
         },
       },
     });
     expect(result.status).toBe("error");
     const recoveryDirectory = (await fs.readdir(f.repositoryRoot)).find((name) => name.startsWith(".hubble-skills-"));
-    if (!recoveryDirectory || result.status !== "error") throw new Error("Expected recovery directory");
+
+    if (!recoveryDirectory || result.status !== "error") {
+      throw new Error("Expected recovery directory");
+    }
+
     const backup = join(f.repositoryRoot, recoveryDirectory, "previous");
     expect(result.error.message).toContain(backup);
     expect(await fs.readFile(join(backup, "previous.md"), "utf8")).toBe("recover me");
   } finally {
-    for (const path of failedCleanup) await fs.rm(path, { recursive: true, force: true });
+    for (const path of failedCleanup) {
+      await fs.rm(path, { recursive: true, force: true });
+    }
   }
 });

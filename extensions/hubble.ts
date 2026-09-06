@@ -22,12 +22,18 @@ export default function (pi: ExtensionAPI): void {
   const getVault: GetVault = (context) => {
     vaultPromise ??= resolveHubbleRoot(pi.getFlag("hubble-dir"), context.cwd, context.isProjectTrusted())
       .then(async (root) => {
-        if (Result.isError(root)) return root;
+        if (Result.isError(root)) {
+          return root;
+        }
+
         return openVault(root.value);
       })
       .then(
         (result) => {
-          if (result.status === "error") vaultPromise = undefined;
+          if (result.status === "error") {
+            vaultPromise = undefined;
+          }
+
           return result;
         },
         (cause) => {

@@ -12,7 +12,10 @@ const MAX_AUTOCOMPLETE_ITEMS = 50;
 /** Returns the path portion not already represented by a scoped autocomplete query. */
 function scopedDisplayPath(path: string, query: string): string {
   const slashIndex = query.lastIndexOf("/");
-  if (slashIndex === -1) return path;
+
+  if (slashIndex === -1) {
+    return path;
+  }
 
   const typedDirectory = query.slice(0, slashIndex + 1);
   return path.toLowerCase().startsWith(typedDirectory.toLowerCase()) ? path.slice(typedDirectory.length) : path;
@@ -27,11 +30,16 @@ function extractHubblePrefix(textBeforeCursor: string): string | undefined {
 async function autocompleteItems(vault: Vault, files: NoteReference[], query: string): Promise<AutocompleteItem[]> {
   const filtered = query ? fuzzyFilter(files, query, (file) => file.relative) : files;
   const safe: NoteReference[] = [];
+
   for (const file of filtered.slice(0, MAX_AUTOCOMPLETE_ITEMS)) {
     // Cached discovery proves past containment only; check again before offering an attachment.
     const checked = await resolveVaultPath(vault, file.relative);
-    if (Result.isOk(checked) && checked.value.absolute === file.absolute) safe.push(checked.value);
+
+    if (Result.isOk(checked) && checked.value.absolute === file.absolute) {
+      safe.push(checked.value);
+    }
   }
+
   return safe.map((file) => ({
     value: attachmentValue(file.absolute),
     // Omitting descriptions lets Pi allocate the full popup width to long
@@ -43,7 +51,10 @@ async function autocompleteItems(vault: Vault, files: NoteReference[], query: st
 /** Registers @hubble note suggestions and delegates non-Hubble completion to Pi. */
 export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault, now: () => number = Date.now): void {
   pi.on("session_start", (_event, ctx) => {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI) {
+      return;
+    }
+
     ctx.ui.addAutocompleteProvider((current) => {
       let cached:
         | {
@@ -59,14 +70,23 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
         async getSuggestions(lines, cursorLine, cursorCol, options) {
           const beforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
           const prefix = extractHubblePrefix(beforeCursor);
-          if (!prefix) return current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-          if (options.signal.aborted) return { prefix, items: [] };
+          if (!prefix) {
+            return current.getSuggestions(lines, cursorLine, cursorCol, options);
+          }
+
+          if (options.signal.aborted) {
+            return { prefix, items: [] };
+          }
 
           const vault = await getVault(ctx);
-          if (Result.isError(vault) || options.signal.aborted) return { prefix, items: [] };
+
+          if (Result.isError(vault) || options.signal.aborted) {
+            return { prefix, items: [] };
+          }
 
           const query = prefix.startsWith("@hubble/") ? prefix.slice("@hubble/".length) : "";
+
           if (
             !cached ||
             cached.vault !== vault.value ||
@@ -80,14 +100,21 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
               files: vault.value.list(),
             };
           }
+
           const pending = cached.files;
           const files = await pending;
           // Autocomplete deliberately hides expected Vault failures. Defects still throw.
           if (Result.isError(files)) {
-            if (cached?.files === pending) cached = undefined;
+            if (cached?.files === pending) {
+              cached = undefined;
+            }
+
             return { prefix, items: [] };
           }
-          if (options.signal.aborted) return { prefix, items: [] };
+
+          if (options.signal.aborted) {
+            return { prefix, items: [] };
+          }
 
           const items = await autocompleteItems(vault.value, files.value, query);
           return { prefix, items: options.signal.aborted ? [] : items };

@@ -36,22 +36,30 @@ interface SyncArguments {
 function parseArguments(args: ReadonlyArray<string>): ResultType<SyncArguments, SkillSyncError> {
   let check = false;
   let ref = "main";
+
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
+
     if (argument === "--check") {
       check = true;
       continue;
     }
+
     if (argument === "--ref") {
       const value = args[index + 1];
-      if (!value || value.startsWith("-"))
+
+      if (!value || value.startsWith("-")) {
         return Result.err(new SkillSyncError({ reason: "arguments", message: "--ref requires a git ref" }));
+      }
+
       ref = value;
       index++;
       continue;
     }
+
     return Result.err(new SkillSyncError({ reason: "arguments", message: `Unknown argument: ${argument}` }));
   }
+
   return Result.ok({ check, ref });
 }
 
@@ -88,19 +96,30 @@ async function snapshotDirectory(
   /** Recurses through real directories and rejects symlinks before copying upstream content. */
   async function visit(path: string, prefix: string): Promise<ResultType<void, SkillSyncError>> {
     const entries = await fileOperation(path, () => fileSystem.readdir(path, { withFileTypes: true }));
-    if (Result.isError(entries))
+
+    if (Result.isError(entries)) {
       return prefix === "" && MissingFileError.is(entries.error.cause) ? Result.ok() : entries;
+    }
+
     for (const entry of entries.value.sort((a, b) => a.name.localeCompare(b.name))) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolute = join(path, entry.name);
+
       if (entry.isDirectory()) {
         const nested = await visit(absolute, relative);
-        if (Result.isError(nested)) return nested;
+
+        if (Result.isError(nested)) {
+          return nested;
+        }
       } else if (entry.isFile()) {
         const content = await fileOperation(absolute, () => fileSystem.readFile(absolute));
-        if (Result.isError(content)) return content;
+
+        if (Result.isError(content)) {
+          return content;
+        }
+
         snapshot.set(relative, content.value);
-      } else
+      } else {
         return Result.err(
           new SkillSyncError({
             reason: "upstream-entry",
@@ -108,7 +127,9 @@ async function snapshotDirectory(
             message: `Skill sync contains an unsupported filesystem entry: ${absolute}`,
           })
         );
+      }
     }
+
     return Result.ok();
   }
   const result = await visit(directory, "");
@@ -117,11 +138,18 @@ async function snapshotDirectory(
 
 /** Compares snapshot paths and bytes without relying on mtimes. */
 function snapshotsEqual(left: ReadonlyMap<string, Buffer>, right: ReadonlyMap<string, Buffer>): boolean {
-  if (left.size !== right.size) return false;
+  if (left.size !== right.size) {
+    return false;
+  }
+
   for (const [path, content] of left) {
     const other = right.get(path);
-    if (!other || !content.equals(other)) return false;
+
+    if (!other || !content.equals(other)) {
+      return false;
+    }
   }
+
   return true;
 }
 
@@ -134,12 +162,20 @@ async function stageSkills(
   fileSystem: SkillSyncFileSystem
 ): Promise<ResultType<string, SkillSyncError>> {
   const made = await fileOperation(staged, () => fileSystem.mkdir(staged, { recursive: true }));
-  if (Result.isError(made)) return made;
+
+  if (Result.isError(made)) {
+    return made;
+  }
+
   for (const skill of selectedSkills) {
     const sourceSkill = join(source, "skills", skill);
     const snapshot = await snapshotDirectory(sourceSkill, fileSystem);
-    if (Result.isError(snapshot)) return snapshot;
-    if (!snapshot.value.has("SKILL.md"))
+
+    if (Result.isError(snapshot)) {
+      return snapshot;
+    }
+
+    if (!snapshot.value.has("SKILL.md")) {
       return Result.err(
         new SkillSyncError({
           reason: "upstream-entry",
@@ -147,13 +183,23 @@ async function stageSkills(
           message: "Upstream skill is missing SKILL.md.",
         })
       );
+    }
+
     const copied = await fileOperation(sourceSkill, () =>
       fileSystem.cp(sourceSkill, join(staged, skill), { recursive: true })
     );
-    if (Result.isError(copied)) return copied;
+
+    if (Result.isError(copied)) {
+      return copied;
+    }
   }
+
   const commit = await runGit(["rev-parse", "HEAD"], source);
-  if (Result.isError(commit)) return commit;
+
+  if (Result.isError(commit)) {
+    return commit;
+  }
+
   const encoded = Result.try({
     try: () =>
       JSON.stringify(
@@ -164,7 +210,11 @@ async function stageSkills(
     catch: (cause) =>
       new SkillSyncError({ reason: "filesystem", cause, message: "Could not serialize skill sync metadata." }),
   });
-  if (Result.isError(encoded)) return encoded;
+
+  if (Result.isError(encoded)) {
+    return encoded;
+  }
+
   const metadata = join(staged, "upstream.json");
   const written = await fileOperation(metadata, () => fileSystem.writeFile(metadata, `${encoded.value}\n`, "utf8"));
   return Result.isError(written) ? written : commit;
@@ -178,11 +228,20 @@ async function swapSkills(
   fileSystem: SkillSyncFileSystem
 ): Promise<ResultType<void, SkillSyncError>> {
   const saved = await fileOperation(target, () => fileSystem.rename(target, backup));
-  if (Result.isError(saved) && !MissingFileError.is(saved.error.cause)) return saved;
+
+  if (Result.isError(saved) && !MissingFileError.is(saved.error.cause)) {
+    return saved;
+  }
+
   const installed = await fileOperation(target, () => fileSystem.rename(incoming, target));
-  if (Result.isOk(installed) || Result.isError(saved)) return installed;
+
+  if (Result.isOk(installed) || Result.isError(saved)) {
+    return installed;
+  }
+
   const restored = await fileOperation(backup, () => fileSystem.rename(backup, target));
-  if (Result.isError(restored))
+
+  if (Result.isError(restored)) {
     return Result.err(
       new SkillSyncError({
         reason: "rollback",
@@ -191,6 +250,8 @@ async function swapSkills(
         message: `Skill installation and rollback failed. The previous skills are preserved at ${backup}.`,
       })
     );
+  }
+
   return installed;
 }
 
@@ -201,17 +262,25 @@ async function installSkills(
   fileSystem: SkillSyncFileSystem
 ): Promise<ResultType<void, SkillSyncError>> {
   const temporary = await fileOperation(target, () => fileSystem.mkdtemp(join(dirname(target), ".hubble-skills-")));
-  if (Result.isError(temporary)) return temporary;
+
+  if (Result.isError(temporary)) {
+    return temporary;
+  }
+
   const incoming = join(temporary.value, "incoming");
   const backup = join(temporary.value, "previous");
   const copied = await fileOperation(incoming, () => fileSystem.cp(staged, incoming, { recursive: true }));
   const installed = Result.isError(copied) ? copied : await swapSkills(incoming, target, backup, fileSystem);
   // This directory is the recovery copy. Never delete it when rollback failed.
-  if (Result.isError(installed) && installed.error.reason === "rollback") return installed;
+  if (Result.isError(installed) && installed.error.reason === "rollback") {
+    return installed;
+  }
+
   const cleaned = await fileOperation(temporary.value, () =>
     fileSystem.rm(temporary.value, { recursive: true, force: true })
   );
-  if (Result.isError(cleaned))
+
+  if (Result.isError(cleaned)) {
     return Result.err(
       new SkillSyncError({
         reason: "filesystem",
@@ -222,6 +291,8 @@ async function installSkills(
         message: `Could not clean up skill installation files at ${temporary.value}.`,
       })
     );
+  }
+
   return installed;
 }
 
@@ -236,7 +307,11 @@ async function syncInDirectory(
   const staged = join(temporary, "staged");
   const target = join(options.repositoryRoot, "skills");
   const made = await fileOperation(source, () => fileSystem.mkdir(source, { recursive: true }));
-  if (Result.isError(made)) return made;
+
+  if (Result.isError(made)) {
+    return made;
+  }
+
   for (const command of [
     ["init", "--quiet"],
     ["remote", "add", "origin", options.upstreamRepository],
@@ -244,22 +319,43 @@ async function syncInDirectory(
     ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
   ]) {
     const ran = await runGit(command, source);
-    if (Result.isError(ran)) return ran;
+
+    if (Result.isError(ran)) {
+      return ran;
+    }
   }
+
   const commit = await stageSkills(source, staged, args.ref, options, fileSystem);
-  if (Result.isError(commit)) return commit;
+
+  if (Result.isError(commit)) {
+    return commit;
+  }
+
   const current = await snapshotDirectory(target, fileSystem);
-  if (Result.isError(current)) return current;
+
+  if (Result.isError(current)) {
+    return current;
+  }
+
   const next = await snapshotDirectory(staged, fileSystem);
-  if (Result.isError(next)) return next;
-  if (snapshotsEqual(current.value, next.value)) return Result.ok(`Hubble skills are current at ${commit.value}.`);
-  if (args.check)
+
+  if (Result.isError(next)) {
+    return next;
+  }
+
+  if (snapshotsEqual(current.value, next.value)) {
+    return Result.ok(`Hubble skills are current at ${commit.value}.`);
+  }
+
+  if (args.check) {
     return Result.err(
       new SkillSyncError({
         reason: "different",
         message: `Vendored Hubble skills differ from ${options.upstreamRepository}@${commit.value}`,
       })
     );
+  }
+
   const installed = await installSkills(staged, target, fileSystem);
   return Result.isError(installed)
     ? installed
@@ -272,10 +368,18 @@ export async function syncHubbleSkills(
   options: SkillSyncOptions
 ): Promise<ResultType<string, SkillSyncError>> {
   const parsed = parseArguments(args);
-  if (Result.isError(parsed)) return parsed;
+
+  if (Result.isError(parsed)) {
+    return parsed;
+  }
+
   const fileSystem = options.fileSystem ?? fs;
   const temporary = await fileOperation(tmpdir(), () => fileSystem.mkdtemp(join(tmpdir(), "pi-hubble-skills-")));
-  if (Result.isError(temporary)) return temporary;
+
+  if (Result.isError(temporary)) {
+    return temporary;
+  }
+
   let result: ResultType<string, SkillSyncError>;
   let cleaned: ResultType<void, SkillSyncError>;
   try {
@@ -285,7 +389,7 @@ export async function syncHubbleSkills(
       fileSystem.rm(temporary.value, { recursive: true, force: true })
     );
   }
-  if (Result.isError(cleaned))
+  if (Result.isError(cleaned)) {
     return Result.err(
       new SkillSyncError({
         reason: "filesystem",
@@ -298,5 +402,7 @@ export async function syncHubbleSkills(
           : `Could not clean up skill sync temporary files at ${temporary.value}.`,
       })
     );
+  }
+
   return result;
 }

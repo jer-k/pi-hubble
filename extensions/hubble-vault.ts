@@ -128,39 +128,65 @@ export class Vault extends VaultRoot {
         })
       );
     }
+
     return this.scan(query, signal, page);
   }
 
   /** Shares matching semantics between complete UI search and bounded tool pages without retaining skipped matches. */
   private async scan(query: string, signal?: AbortSignal, page?: SearchPageOptions): Promise<VaultSearchPageResult> {
     const normalized = query.trim().toLowerCase();
-    if (!normalized)
+
+    if (!normalized) {
       return Result.err(new NoteValidationError({ reason: "query", message: "query must not be empty." }));
+    }
 
     const files = await this.list(signal);
-    if (Result.isError(files)) return files;
+
+    if (Result.isError(files)) {
+      return files;
+    }
 
     const results: NoteSearchResult[] = [];
     let skipped = 0;
     let retained = 0;
+
     for (const note of files.value) {
-      if (signal?.aborted) throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
+      }
 
       const content = await this.read(note.relative);
-      if (Result.isError(content)) return content;
+
+      if (Result.isError(content)) {
+        return content;
+      }
 
       const matches: NoteSearchMatch[] = [];
+
       for (const [index, line] of content.value.content.split("\n").entries()) {
-        if (!line.toLowerCase().includes(normalized)) continue;
-        if (page && skipped++ < page.offset - 1) continue;
+        if (!line.toLowerCase().includes(normalized)) {
+          continue;
+        }
+
+        if (page && skipped++ < page.offset - 1) {
+          continue;
+        }
+
         if (page && retained === page.limit) {
-          if (matches.length > 0) results.push({ note: content.value.note, matches });
+          if (matches.length > 0) {
+            results.push({ note: content.value.note, matches });
+          }
+
           return Result.ok({ results, hasMore: true });
         }
+
         matches.push({ line: index + 1, text: line });
         retained++;
       }
-      if (matches.length > 0) results.push({ note: content.value.note, matches });
+
+      if (matches.length > 0) {
+        results.push({ note: content.value.note, matches });
+      }
     }
 
     return Result.ok({ results, hasMore: false });
@@ -169,13 +195,22 @@ export class Vault extends VaultRoot {
   /** Resolves, validates, and reads one supported note from the vault. */
   async read(path: string): Promise<VaultReadResult> {
     const resolved = await resolveVaultPath(this, path);
-    if (Result.isError(resolved)) return resolved;
+
+    if (Result.isError(resolved)) {
+      return resolved;
+    }
 
     const supported = assertNotePath(resolved.value);
-    if (Result.isError(supported)) return supported;
+
+    if (Result.isError(supported)) {
+      return supported;
+    }
 
     const content = await readVaultFile(resolved.value, this.fileSystem);
-    if (Result.isError(content)) return content;
+
+    if (Result.isError(content)) {
+      return content;
+    }
 
     return Result.ok({ note: resolved.value, content: content.value });
   }
@@ -192,7 +227,11 @@ export class Vault extends VaultRoot {
     filename?: string
   ): Promise<VaultCreateResult> {
     const created = await writeNewVaultFile(this, title, content, folder, format, filename, this.fileSystem);
-    if (Result.isOk(created)) this.discoveryRevision++;
+
+    if (Result.isOk(created)) {
+      this.discoveryRevision++;
+    }
+
     return created;
   }
 
@@ -202,13 +241,22 @@ export class Vault extends VaultRoot {
    */
   async edit(path: string, edits: ReadonlyArray<HubbleEdit>, signal?: AbortSignal): Promise<VaultEditResult> {
     const resolved = await resolveVaultPath(this, path);
-    if (Result.isError(resolved)) return resolved;
+
+    if (Result.isError(resolved)) {
+      return resolved;
+    }
 
     const supported = assertNotePath(resolved.value);
-    if (Result.isError(supported)) return supported;
+
+    if (Result.isError(supported)) {
+      return supported;
+    }
 
     const edited = await editVaultFile(resolved.value, edits, signal, this.fileSystem);
-    if (Result.isError(edited)) return edited;
+
+    if (Result.isError(edited)) {
+      return edited;
+    }
 
     return Result.ok(resolved.value);
   }

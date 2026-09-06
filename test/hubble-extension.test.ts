@@ -45,7 +45,11 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
   const context = { cwd: process.cwd(), isProjectTrusted: () => true };
   const executionContext = testCast<typeof context, ExtensionContext>(context);
   const createTool = tools.find((tool) => tool.name === "hubble_create");
-  if (!createTool) throw new Error("hubble_create was not registered");
+
+  if (!createTool) {
+    throw new Error("hubble_create was not registered");
+  }
+
   await Promise.all([
     createTool.execute("create-1", { title: "Cached Root", content: "body" }, undefined, undefined, executionContext),
     createTool.execute("create-2", { title: "Cached Root", content: "body" }, undefined, undefined, executionContext),
@@ -73,7 +77,11 @@ test("retries root resolution after a failed attempt", async () => {
 
   extension(testCast<typeof pi, ExtensionAPI>(pi));
   const createTool = tools.find((tool) => tool.name === "hubble_create");
-  if (!createTool) throw new Error("hubble_create was not registered");
+
+  if (!createTool) {
+    throw new Error("hubble_create was not registered");
+  }
+
   const context = { cwd: process.cwd(), isProjectTrusted: () => true };
   const executionContext = testCast<typeof context, ExtensionContext>(context);
 

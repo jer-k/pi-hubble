@@ -15,7 +15,11 @@ function systemError(message: string, code: string): Error & { code: string } {
 async function fixture(fileSystem: NoteFileSystem = fs) {
   const root = await fs.mkdtemp(join(tmpdir(), "pi-hubble-io-"));
   const opened = await openVault(root, fileSystem);
-  if (opened.status === "error") throw opened.error;
+
+  if (opened.status === "error") {
+    throw opened.error;
+  }
+
   return {
     root,
     vault: opened.value,
@@ -73,7 +77,11 @@ test("closes the real create handle and removes an incomplete note after a write
   );
   const result = await f.vault.create("Write Failure", "body");
   expect(result).toMatchObject({ status: "error", error: { _tag: "NoteWriteError", cause } });
-  if (!openedHandle) throw new Error("Expected a real file handle");
+
+  if (!openedHandle) {
+    throw new Error("Expected a real file handle");
+  }
+
   await expect(openedHandle.stat()).rejects.toMatchObject({ code: "EBADF" });
   expect(await fs.readdir(f.root)).toEqual([]);
 });
@@ -98,9 +106,17 @@ test.each(["create", "edit"] as const)("preserves %s and cleanup failures", asyn
       ? await f.vault.create("New", "body")
       : await f.vault.edit("note.md", [{ oldText: "old", newText: "new" }]);
   expect(result.status).toBe("error");
-  if (result.status !== "error" || result.error._tag !== "NoteWriteError") throw new Error("Expected write error");
+
+  if (result.status !== "error" || result.error._tag !== "NoteWriteError") {
+    throw new Error("Expected write error");
+  }
+
   const aggregate = result.error.cause;
-  if (!(aggregate instanceof AggregateError)) throw new Error("Expected aggregate failure");
+
+  if (!(aggregate instanceof AggregateError)) {
+    throw new Error("Expected aggregate failure");
+  }
+
   expect(aggregate.errors[0]).toMatchObject({ _tag: "NoteWriteError", cause: writeCause });
   expect(aggregate.errors[1]).toBe(cleanupCause);
   expect(await fs.readFile(join(f.root, "note.md"), "utf8")).toBe("old");
@@ -124,17 +140,26 @@ test.each(["writeFile", "chmod", "sync", "close", "rename"] as const)(
     const cause = systemError("edit failed", "EIO");
     const fileSystem = handles((handle) => {
       const operations = handleOperations(handle);
-      if (operation !== "rename")
+
+      if (operation !== "rename") {
         operations[operation] = async () => {
-          if (operation === "close") await handle.close();
+          if (operation === "close") {
+            await handle.close();
+          }
+
           throw cause;
         };
+      }
+
       return operations;
     });
     await using f = await fixture({
       ...fileSystem,
       async rename(from, to) {
-        if (operation === "rename") throw cause;
+        if (operation === "rename") {
+          throw cause;
+        }
+
         await fs.rename(from, to);
       },
     });

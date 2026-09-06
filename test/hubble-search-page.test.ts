@@ -15,11 +15,18 @@ test("stops reading after page lookahead and preserves unbounded search behavior
     const opened = await Vault.open(root, {
       ...fs,
       async readFile(path, encoding) {
-        if (path.endsWith("z.md")) throw cause;
+        if (path.endsWith("z.md")) {
+          throw cause;
+        }
+
         return fs.readFile(path, encoding);
       },
     });
-    if (opened.status === "error") throw opened.error;
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
     const page = await opened.value.searchPage("MATCH", { offset: 2, limit: 1 });
     expect(page).toMatchObject({
       status: "ok",
@@ -29,6 +36,7 @@ test("stops reading after page lookahead and preserves unbounded search behavior
       status: "error",
       error: { _tag: "NoteReadError", cause },
     });
+
     for (const options of [
       { offset: 0, limit: 1 },
       { offset: 1, limit: 501 },
@@ -39,6 +47,7 @@ test("stops reading after page lookahead and preserves unbounded search behavior
         error: { _tag: "NoteValidationError", reason: "pagination" },
       });
     }
+
     const controller = new AbortController();
     controller.abort(new Error("cancelled"));
     await expect(opened.value.searchPage("match", { offset: 1, limit: 1 }, controller.signal)).rejects.toThrow(

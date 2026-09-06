@@ -79,11 +79,23 @@ test("registers find/search behavior and attaches a selected note", async () => 
   ]);
 
   const opened = await openVault(root);
-  if (opened.status === "error") throw opened.error;
+
+  if (opened.status === "error") {
+    throw opened.error;
+  }
+
   const listed = await opened.value.list();
-  if (listed.status === "error") throw listed.error;
+
+  if (listed.status === "error") {
+    throw listed.error;
+  }
+
   const selected = listed.value.find((note) => note.relative === "notes/one.md");
-  if (selected === undefined) throw new Error("Expected the test note in the vault listing");
+
+  if (selected === undefined) {
+    throw new Error("Expected the test note in the vault listing");
+  }
+
   const interactive = createContext();
   interactive.ctx.ui.custom = async () => selected;
   await runCommand(command?.options, "find one", interactive.ctx);

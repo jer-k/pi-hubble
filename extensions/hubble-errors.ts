@@ -25,9 +25,18 @@ const SystemError = Type.Object({ code: Type.String() }, { additionalProperties:
 
 /** Reads the recoverable Node error codes used by Hubble. */
 function systemErrorCode(cause: unknown): "ENOENT" | "EEXIST" | undefined {
-  if (!Value.Check(SystemError, cause)) return undefined;
-  if (cause.code === "ENOENT") return "ENOENT";
-  if (cause.code === "EEXIST") return "EEXIST";
+  if (!Value.Check(SystemError, cause)) {
+    return undefined;
+  }
+
+  if (cause.code === "ENOENT") {
+    return "ENOENT";
+  }
+
+  if (cause.code === "EEXIST") {
+    return "EEXIST";
+  }
+
   return undefined;
 }
 

@@ -69,19 +69,31 @@ const RpcExtensionErrorMessage = Type.Object(
 /** Parses the RPC message variants observed by the CLI integration test and ignores unrelated session events. */
 function parseRpcMessage(line: string): RpcMessage | undefined {
   const input = JSON.parse(line);
-  if (!Value.Check(RpcEnvelope, input)) throw new Error("Pi emitted an invalid RPC message envelope.");
+
+  if (!Value.Check(RpcEnvelope, input)) {
+    throw new Error("Pi emitted an invalid RPC message envelope.");
+  }
 
   if (input.type === "response") {
-    if (!Value.Check(RpcResponseMessage, input)) throw new Error("Pi emitted an invalid RPC response.");
+    if (!Value.Check(RpcResponseMessage, input)) {
+      throw new Error("Pi emitted an invalid RPC response.");
+    }
+
     const { id } = input;
 
     if (input.success) {
-      if (input.command !== "prompt") return undefined;
+      if (input.command !== "prompt") {
+        return undefined;
+      }
+
       const response = { type: "response", command: "prompt", success: true } as const;
       return id === undefined ? response : { ...response, id };
     }
 
-    if (input.error === undefined) throw new Error("Pi emitted an invalid failed RPC response.");
+    if (input.error === undefined) {
+      throw new Error("Pi emitted an invalid failed RPC response.");
+    }
+
     const response = {
       type: "response",
       command: input.command,
@@ -92,10 +104,15 @@ function parseRpcMessage(line: string): RpcMessage | undefined {
   }
 
   if (input.type === "extension_ui_request") {
-    if (!Value.Check(RpcUiRequestMessage, input)) throw new Error("Pi emitted an invalid extension UI request.");
+    if (!Value.Check(RpcUiRequestMessage, input)) {
+      throw new Error("Pi emitted an invalid extension UI request.");
+    }
 
     if (input.method === "notify") {
-      if (input.message === undefined) throw new Error("Pi emitted an invalid extension notification.");
+      if (input.message === undefined) {
+        throw new Error("Pi emitted an invalid extension notification.");
+      }
+
       const notification = {
         type: "extension_ui_request",
         id: input.id,
@@ -106,7 +123,10 @@ function parseRpcMessage(line: string): RpcMessage | undefined {
     }
 
     if (input.method === "set_editor_text") {
-      if (input.text === undefined) throw new Error("Pi emitted an invalid editor update request.");
+      if (input.text === undefined) {
+        throw new Error("Pi emitted an invalid editor update request.");
+      }
+
       return { type: "extension_ui_request", id: input.id, method: "set_editor_text", text: input.text };
     }
 
@@ -114,7 +134,10 @@ function parseRpcMessage(line: string): RpcMessage | undefined {
   }
 
   if (input.type === "extension_error") {
-    if (!Value.Check(RpcExtensionErrorMessage, input)) throw new Error("Pi emitted an invalid extension error.");
+    if (!Value.Check(RpcExtensionErrorMessage, input)) {
+      throw new Error("Pi emitted an invalid extension error.");
+    }
+
     return {
       type: "extension_error",
       extensionPath: input.extensionPath,
@@ -147,25 +170,44 @@ function runPi(vault: string): Promise<RpcMessage[]> {
 
     const parseAvailableLines = (flush = false): void => {
       stdoutBuffer += flush ? decoder.end() : "";
+
       while (true) {
         const newlineIndex = stdoutBuffer.indexOf("\n");
-        if (newlineIndex === -1) break;
+
+        if (newlineIndex === -1) {
+          break;
+        }
+
         let line = stdoutBuffer.slice(0, newlineIndex);
         stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-        if (line.endsWith("\r")) line = line.slice(0, -1);
-        if (!line) continue;
+
+        if (line.endsWith("\r")) {
+          line = line.slice(0, -1);
+        }
+
+        if (!line) {
+          continue;
+        }
+
         const message = parseRpcMessage(line);
+
         if (message !== undefined) {
           messages.push(message);
+
           if (message.type === "response" && message.id === "create") {
             receivedResponse = true;
             child.stdin.end();
           }
         }
       }
+
       if (flush && stdoutBuffer) {
         const message = parseRpcMessage(stdoutBuffer.endsWith("\r") ? stdoutBuffer.slice(0, -1) : stdoutBuffer);
-        if (message !== undefined) messages.push(message);
+
+        if (message !== undefined) {
+          messages.push(message);
+        }
+
         stdoutBuffer = "";
       }
     };
@@ -215,14 +257,17 @@ function runPi(vault: string): Promise<RpcMessage[]> {
         rejectRun(failure);
         return;
       }
+
       if (code !== 0) {
         rejectRun(new Error(`Pi integration process exited with code ${code}.\n${stderr}`));
         return;
       }
+
       if (!receivedResponse) {
         rejectRun(new Error(`Pi exited without responding to the integration command.\n${stderr}`));
         return;
       }
+
       resolveRun(messages);
     });
   });
@@ -244,6 +289,7 @@ async function createIntegrationSession(workspace: string, vault: string): Promi
   });
   await resourceLoader.reload();
   const extensionErrors = resourceLoader.getExtensions().errors;
+
   if (extensionErrors.length > 0) {
     throw new Error(`Could not load the Hubble extension:\n${JSON.stringify(extensionErrors, null, 2)}`);
   }
@@ -261,13 +307,21 @@ async function createIntegrationSession(workspace: string, vault: string): Promi
 
 function getTool(session: AgentSession, name: string) {
   const tool = session.agent.state.tools.find((candidate) => candidate.name === name);
-  if (!tool) throw new Error(`Pi did not activate the ${name} tool.`);
+
+  if (!tool) {
+    throw new Error(`Pi did not activate the ${name} tool.`);
+  }
+
   return tool;
 }
 
 function toolText(result: AgentToolResult<unknown>): string {
   const content = result.content[0];
-  if (content?.type !== "text") throw new Error("Expected the Hubble tool to return text content.");
+
+  if (content?.type !== "text") {
+    throw new Error("Expected the Hubble tool to return text content.");
+  }
+
   return content.text;
 }
 
@@ -473,7 +527,10 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
       },
     };
     await session.bindExtensions({ mode: "tui", uiContext });
-    if (!providerFactory) throw new Error("Hubble did not register an autocomplete provider during session_start.");
+
+    if (!providerFactory) {
+      throw new Error("Hubble did not register an autocomplete provider during session_start.");
+    }
 
     const current: AutocompleteProvider = {
       async getSuggestions() {

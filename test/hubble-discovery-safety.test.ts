@@ -22,20 +22,27 @@ test.each(["root", "directory", "note"] as const)(
         ...fs,
         async readdir(path, options) {
           const entries = await fs.readdir(path, options);
+
           if (!swapped && target !== "root") {
             swapped = true;
             const replacing = target === "directory" ? join(root, "folder") : join(root, "note.md");
             await fs.rm(replacing, { recursive: true });
             await fs.symlink(target === "directory" ? outside : join(outside, "private.md"), replacing);
           }
+
           return entries;
         },
       });
-      if (opened.status === "error") throw opened.error;
+
+      if (opened.status === "error") {
+        throw opened.error;
+      }
+
       if (target === "root") {
         await fs.rename(root, join(base, "original"));
         await fs.symlink(outside, root);
       }
+
       expect(await opened.value.list()).toMatchObject({
         status: "error",
         error: { _tag: "VaultDiscoveryError", reason: "unsafe-path" },
@@ -53,10 +60,17 @@ test("discovers safe notes and ignores static symlinks", async () => {
     await fs.writeFile(join(root, "safe.md"), "safe");
     await fs.symlink(join(root, "safe.md"), join(root, "alias.md"));
     const opened = await Vault.open(root);
-    if (opened.status === "error") throw opened.error;
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
     const listed = await opened.value.list();
     expect(listed.status).toBe("ok");
-    if (listed.status === "ok") expect(listed.value.map((note) => note.relative)).toEqual(["safe.md"]);
+
+    if (listed.status === "ok") {
+      expect(listed.value.map((note) => note.relative)).toEqual(["safe.md"]);
+    }
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -53,7 +53,11 @@ function register(getVault: GetVault): RegisteredHubbleTools {
 
   const registeredTool = (name: HubbleToolName): RegisteredTestTool => {
     const tool = tools[name];
-    if (tool === undefined) throw new Error(`${name} was not registered`);
+
+    if (tool === undefined) {
+      throw new Error(`${name} was not registered`);
+    }
+
     return tool;
   };
   return {
@@ -140,9 +144,11 @@ test("renders expandable Markdown and HTML create previews with resolved success
   const tools = register(async () => openVault(root));
   const registeredRenderCall = tools.hubble_create.renderCall;
   const registeredRenderResult = tools.hubble_create.renderResult;
+
   if (registeredRenderCall === undefined || registeredRenderResult === undefined) {
     throw new Error("hubble_create did not register its renderers");
   }
+
   const renderCall = testCast<
     typeof registeredRenderCall,
     (args: HubbleCreateRenderArguments, theme: RenderTheme, context: RenderContext) => RenderComponent
@@ -206,7 +212,11 @@ test("renders structured create failures", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-render-error-"));
   const tools = register(async () => openVault(root));
   const registeredRenderResult = tools.hubble_create.renderResult;
-  if (registeredRenderResult === undefined) throw new Error("hubble_create did not register renderResult");
+
+  if (registeredRenderResult === undefined) {
+    throw new Error("hubble_create did not register renderResult");
+  }
+
   const renderResult = testCast<
     typeof registeredRenderResult,
     (
@@ -231,7 +241,10 @@ test("normalizes stringified and legacy edit arguments like Pi's built-in edit t
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-arguments-"));
   const tools = register(async () => openVault(root));
   const prepare = tools.hubble_edit.prepareArguments;
-  if (!prepare) throw new Error("hubble_edit did not register prepareArguments");
+
+  if (!prepare) {
+    throw new Error("hubble_edit did not register prepareArguments");
+  }
 
   expect(prepare({ path: "note.md", edits: '[{"oldText":"Alpha","newText":"Beta"}]' })).toEqual({
     path: "note.md",
@@ -304,7 +317,11 @@ test("reports validation failures and honors cancellation", async () => {
 test("reports omitted search matches and allows retrieving every page", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-search-page-"));
   const vault = await openVault(root);
-  if (vault.status === "error") throw vault.error;
+
+  if (vault.status === "error") {
+    throw vault.error;
+  }
+
   await vault.value.create("Matches", "match one\nmatch two\nmatch three");
   const tools = register(async () => vault);
   const first = await tools.hubble_search.execute("page", { query: "match ", limit: 2 }, undefined, undefined, context);
