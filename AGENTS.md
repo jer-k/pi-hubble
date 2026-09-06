@@ -11,7 +11,10 @@ Prefer formatting that makes operations, early returns, and side effects easy to
 Bad example
 
 ```ts
-export async function readVaultFile(path: HubblePath, fileSystem: NoteFileSystem = nodeFileSystem): Promise<NoteReadResult> {
+export async function readVaultFile(
+  path: HubblePath,
+  fileSystem: NoteFileSystem = nodeFileSystem
+): Promise<NoteReadResult> {
   const accessible = await Result.tryPromise({
     try: () => fileSystem.access(path.absolute, constants.R_OK),
     catch: (cause) => noteReadError(path, cause),
@@ -24,13 +27,13 @@ export async function readVaultFile(path: HubblePath, fileSystem: NoteFileSystem
   if (Result.isError(fileStat)) return fileStat;
   if (!fileStat.value.isFile())
     return Result.err(
-      new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." }),
+      new NoteReadError({ path: path.relative, cause: undefined, message: "The requested Hubble path is not a file." })
     );
   return withFileMutationQueue(path.absolute, () =>
     Result.tryPromise({
       try: () => fileSystem.readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
-    }),
+    })
   );
 }
 ```
@@ -40,7 +43,7 @@ Good example
 ```ts
 export async function readVaultFile(
   path: HubblePath,
-  fileSystem: NoteFileSystem = nodeFileSystem,
+  fileSystem: NoteFileSystem = nodeFileSystem
 ): Promise<NoteReadResult> {
   const accessible = await Result.tryPromise({
     try: () => fileSystem.access(path.absolute, constants.R_OK),
@@ -74,7 +77,7 @@ export async function readVaultFile(
     Result.tryPromise({
       try: () => fileSystem.readFile(path.absolute, "utf8"),
       catch: (cause) => noteReadError(path, cause),
-    }),
+    })
   );
 }
 ```
