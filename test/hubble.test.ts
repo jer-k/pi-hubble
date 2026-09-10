@@ -276,7 +276,17 @@ test("discovers, reads, searches, and edits Markdown and HTML notes", async () =
   await writeFile(join(root, "page.HTML"), "<main>HTML match</main>", "utf8");
   await writeFile(join(root, "upper.MD"), "# Upper", "utf8");
   await writeFile(join(root, "ignored.txt"), "ignored match", "utf8");
+  await mkdir(join(root, "empty", "nested"), { recursive: true });
+  await mkdir(join(root, ".hubble", "deleting"), { recursive: true });
+  await writeFile(join(root, ".hubble", "deleting", "deleted.md"), "deleted", "utf8");
   const vault = await vaultAt(root);
+
+  const discovered = await vault.discover();
+  expect(discovered.status).toBe("ok");
+
+  if (discovered.status === "ok") {
+    expect(discovered.value.directories.map((directory) => directory.relative)).toEqual(["empty", "empty/nested"]);
+  }
 
   const listed = await vault.list();
   expect(listed.status).toBe("ok");

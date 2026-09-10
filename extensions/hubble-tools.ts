@@ -321,6 +321,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     promptGuidelines: [
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
       "When the user specifies an exact filename for a new Hubble note, pass it to hubble_create as filename instead of creating and editing multiple notes.",
+      "When the user specifies an @hubble/<folder>/ destination, remove the @hubble/ prefix and pass the remaining vault-relative path to hubble_create as folder.",
     ],
     parameters: CreateParameters,
     /** Creates a new note in the requested format in the configured vault. */

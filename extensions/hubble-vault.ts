@@ -9,11 +9,13 @@ import {
   type VaultOpenErrorType,
 } from "./hubble-errors.ts";
 import {
+  discoverVaultEntries,
   editVaultFile,
   type HubbleEdit,
   listNoteFiles,
   type NoteFileSystem,
   type NoteReference,
+  type VaultEntries,
   readVaultFile,
   writeNewVaultFile,
 } from "./hubble-notes.ts";
@@ -25,7 +27,7 @@ import {
   VaultRoot,
 } from "./hubble-paths.ts";
 
-export type { HubbleEdit, NoteReference } from "./hubble-notes.ts";
+export type { HubbleEdit, NoteReference, VaultDirectoryReference, VaultEntries } from "./hubble-notes.ts";
 
 /** A note and its UTF-8 contents read from the vault. */
 export interface ReadNote {
@@ -70,6 +72,8 @@ export type VaultCreateResult = ResultType<NoteReference, CreateNoteError>;
 export type VaultEditResult = ResultType<NoteReference, EditNoteError | VaultNoteError>;
 /** Result of recursively listing supported notes. */
 export type VaultListResult = ResultType<NoteReference[], DiscoveryError>;
+/** Result of recursively discovering supported notes and vault directories. */
+export type VaultDiscoveryResult = ResultType<VaultEntries, DiscoveryError>;
 
 /**
  * The high-level Hubble seam. Path security, note-format validation, and
@@ -104,6 +108,11 @@ export class Vault extends VaultRoot {
   /** Lists all supported notes currently stored in the vault. */
   async list(signal?: AbortSignal): Promise<VaultListResult> {
     return listNoteFiles(this, this.fileSystem, signal);
+  }
+
+  /** Discovers supported notes and all safe directories currently stored in the vault. */
+  async discover(signal?: AbortSignal): Promise<VaultDiscoveryResult> {
+    return discoverVaultEntries(this, this.fileSystem, signal);
   }
 
   /** Searches every supported note's raw text for case-insensitive line matches. */

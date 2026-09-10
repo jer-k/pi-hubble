@@ -554,6 +554,19 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
     const all = await provider.getSuggestions(["@hubble/"], 0, 8, { signal });
     expect(all?.items.map((item) => item.label)).toEqual([
       "@hubble/alpha.md",
+      "@hubble/notes/",
+      "@hubble/notes/beta.md",
+      "@hubble/page.html",
+    ]);
+
+    await mkdir(join(vault, "new-folder"));
+    await writeFile(join(vault, "new-folder", "new-note.md"), "# New", "utf8");
+    const refreshed = await provider.getSuggestions(["@hubble/"], 0, 8, { signal, force: true });
+    expect(refreshed?.items.map((item) => item.label)).toEqual([
+      "@hubble/alpha.md",
+      "@hubble/new-folder/",
+      "@hubble/new-folder/new-note.md",
+      "@hubble/notes/",
       "@hubble/notes/beta.md",
       "@hubble/page.html",
     ]);

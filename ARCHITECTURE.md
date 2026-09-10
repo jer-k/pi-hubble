@@ -60,13 +60,16 @@ operations and format the results for the agent.
 | `/hubble find`   | `list` → fuzzy filename filtering                         | Picker selection becomes a Pi `@` attachment.                                                                        |
 | `/hubble search` | `search` → all matching notes                             | Content matches determine which notes appear in the picker.                                                          |
 | `/hubble new`    | `create` for a supplied title                             | Creates a blank note and attaches it. With a blank title, asks the idle agent to draft a note using `hubble_create`. |
-| `@hubble/`       | Cached `list` → fuzzy filtering → path revalidation       | Up to 50 suggestions, inserted as ordinary Pi `@` attachments.                                                       |
+| `@hubble/`       | Cached `discover` → fuzzy filtering → path revalidation   | Up to 50 notes or directories; notes attach normally and directories remain Hubble-relative destination references.  |
 
 Tool searches retain one page and stop reading after one additional match proves
 there is another page. They still discover the note paths first. Interactive
 content search uses the unbounded `search` method to populate the picker.
-Autocomplete caches discovery for up to one second; successful creation changes
-`Vault.discoveryVersion` so the next lookup refreshes it.
+Autocomplete discovers safe directories as well as supported notes, including
+empty directories. It caches ordinary discovery for up to one second. Explicit
+Tab completion bypasses that cache, and successful creation changes
+`Vault.discoveryVersion`, so both user-requested refreshes and extension-created
+notes appear on the next lookup.
 
 Search and read responses pass through `truncateOutput` in `hubble-tools.ts`.
 Pi's line and byte limits bound the text sent to the model; oversized output is
@@ -81,7 +84,7 @@ the vault. Pagination and output-size truncation are separate concerns.
 | [hubble-config.ts](extensions/hubble-config.ts)             | Config parsing, project-trust handling, root precedence, and configuration errors.                                                     |
 | [hubble-tools.ts](extensions/hubble-tools.ts)               | Tool schemas, edit-argument compatibility, response formatting, output persistence, and create previews.                               |
 | [hubble-command.ts](extensions/hubble-command.ts)           | `/hubble` parsing, interactive prompts, note selection, and agent-assisted creation.                                                   |
-| [hubble-autocomplete.ts](extensions/hubble-autocomplete.ts) | Mention detection, discovery caching, suggestion filtering, and delegation to Pi's other completions.                                  |
+| [hubble-autocomplete.ts](extensions/hubble-autocomplete.ts) | Mention detection, note and directory completion, discovery caching, path revalidation, and delegation to Pi's other completions.      |
 | [hubble-ui.ts](extensions/hubble-ui.ts)                     | The filterable note picker and escaped attachment strings, using Pi's TUI components.                                                  |
 | [hubble-vault.ts](extensions/hubble-vault.ts)               | The shared note API and search orchestration. Callers use this instead of coordinating storage themselves.                             |
 | [hubble-paths.ts](extensions/hubble-paths.ts)               | Canonical roots, vault-relative path resolution, symlink containment, supported formats, and branded `HubblePath` values.              |
@@ -127,7 +130,7 @@ sequenceDiagram
 Creation holds a vault-root queue while allocating a filename, then also holds
 the destination queue through writing and cleanup. Reads and edits use that same
 file queue. Exact edits preserve the UTF-8 BOM and the detected line-ending style.
-Discovery revalidates roots, directories, and note paths while skipping symlinks.
+Discovery revalidates roots, directories, and note paths while skipping symlinks and Hubble's internal `.hubble` metadata directory.
 
 These are in-process queues shared with Pi, not locks acquired by Hubble.
 External-save detection is optimistic: another application can still save between

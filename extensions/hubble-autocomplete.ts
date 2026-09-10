@@ -3,9 +3,15 @@ import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result } from "better-result";
 
 import type { GetVault } from "./hubble-config.ts";
-import { resolveVaultPath } from "./hubble-paths.ts";
+import { resolveVaultDirectory, resolveVaultPath } from "./hubble-paths.ts";
 import { attachmentValue } from "./hubble-ui.ts";
-import type { Vault, VaultListResult, NoteReference } from "./hubble-vault.ts";
+import type {
+  NoteReference,
+  Vault,
+  VaultDirectoryReference,
+  VaultDiscoveryResult,
+  VaultEntries,
+} from "./hubble-vault.ts";
 
 const MAX_AUTOCOMPLETE_ITEMS = 50;
 
@@ -26,26 +32,55 @@ function extractHubblePrefix(textBeforeCursor: string): string | undefined {
   return textBeforeCursor.match(/(?:^|[ \t])(@hubble(?:\/[^\s]*)?)$/u)?.[1];
 }
 
-/** Converts matching vault notes into the capped list shown by autocomplete. */
-async function autocompleteItems(vault: Vault, files: NoteReference[], query: string): Promise<AutocompleteItem[]> {
-  const filtered = query ? fuzzyFilter(files, query, (file) => file.relative) : files;
-  const safe: NoteReference[] = [];
+type HubbleAutocompleteEntry =
+  | { readonly kind: "directory"; readonly reference: VaultDirectoryReference }
+  | { readonly kind: "note"; readonly reference: NoteReference };
 
-  for (const file of filtered.slice(0, MAX_AUTOCOMPLETE_ITEMS)) {
-    // Cached discovery proves past containment only; check again before offering an attachment.
-    const checked = await resolveVaultPath(vault, file.relative);
+/** Returns the Hubble-relative path used to match and display one autocomplete entry. */
+function entryPath(entry: HubbleAutocompleteEntry): string {
+  return entry.kind === "directory" ? `${entry.reference.relative}/` : entry.reference.relative;
+}
 
-    if (Result.isOk(checked) && checked.value.absolute === file.absolute) {
-      safe.push(checked.value);
+/** Converts matching vault notes and directories into the capped list shown by autocomplete. */
+async function autocompleteItems(vault: Vault, entries: VaultEntries, query: string): Promise<AutocompleteItem[]> {
+  const candidates: HubbleAutocompleteEntry[] = [
+    ...entries.directories.map((reference) => ({ kind: "directory", reference }) as const),
+    ...entries.notes.map((reference) => ({ kind: "note", reference }) as const),
+  ].sort((left, right) => entryPath(left).localeCompare(entryPath(right)));
+  const matching = query ? fuzzyFilter(candidates, query, entryPath) : candidates;
+  const safe: HubbleAutocompleteEntry[] = [];
+
+  for (const entry of matching) {
+    const path = entryPath(entry);
+
+    if (entry.kind === "directory" && path.toLowerCase() === query.toLowerCase()) {
+      continue;
+    }
+
+    const checked =
+      entry.kind === "directory"
+        ? await resolveVaultDirectory(vault, entry.reference.relative)
+        : await resolveVaultPath(vault, entry.reference.relative);
+
+    if (Result.isOk(checked) && checked.value.absolute === entry.reference.absolute) {
+      safe.push({ kind: entry.kind, reference: checked.value });
+    }
+
+    if (safe.length === MAX_AUTOCOMPLETE_ITEMS) {
+      break;
     }
   }
 
-  return safe.map((file) => ({
-    value: attachmentValue(file.absolute),
-    // Omitting descriptions lets Pi allocate the full popup width to long
-    // paths instead of restricting labels to its 32-column primary column.
-    label: query.includes("/") ? scopedDisplayPath(file.relative, query) : `@hubble/${file.relative}`,
-  }));
+  return safe.map((entry) => {
+    const path = entryPath(entry);
+
+    return {
+      value: entry.kind === "directory" ? `@hubble/${path}` : attachmentValue(entry.reference.absolute),
+      // Omitting descriptions lets Pi allocate the full popup width to long
+      // paths instead of restricting labels to its 32-column primary column.
+      label: query.includes("/") ? scopedDisplayPath(path, query) : `@hubble/${path}`,
+    };
+  });
 }
 
 /** Registers @hubble note suggestions and delegates non-Hubble completion to Pi. */
@@ -61,7 +96,7 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
             readonly vault: Vault;
             readonly version: number;
             readonly expiresAt: number;
-            readonly files: Promise<VaultListResult>;
+            readonly entries: Promise<VaultDiscoveryResult>;
           }
         | undefined;
       return {
@@ -88,6 +123,7 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
           const query = prefix.startsWith("@hubble/") ? prefix.slice("@hubble/".length) : "";
 
           if (
+            options.force ||
             !cached ||
             cached.vault !== vault.value ||
             cached.version !== vault.value.discoveryVersion ||
@@ -97,15 +133,15 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
               vault: vault.value,
               version: vault.value.discoveryVersion,
               expiresAt: now() + 1_000,
-              files: vault.value.list(),
+              entries: vault.value.discover(),
             };
           }
 
-          const pending = cached.files;
-          const files = await pending;
+          const pending = cached.entries;
+          const entries = await pending;
           // Autocomplete deliberately hides expected Vault failures. Defects still throw.
-          if (Result.isError(files)) {
-            if (cached?.files === pending) {
+          if (Result.isError(entries)) {
+            if (cached?.entries === pending) {
               cached = undefined;
             }
 
@@ -116,7 +152,7 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
             return { prefix, items: [] };
           }
 
-          const items = await autocompleteItems(vault.value, files.value, query);
+          const items = await autocompleteItems(vault.value, entries.value, query);
           return { prefix, items: options.signal.aborted ? [] : items };
         },
         /** Reuses Pi's completion insertion behavior for the selected suggestion. */
