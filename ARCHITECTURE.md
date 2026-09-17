@@ -53,6 +53,7 @@ operations and format the results for the agent.
 
 | Entry point      | Route through `Vault`                                     | Result                                                                                                               |
 | ---------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `hubble_list`    | `discover` → safe recursive scan                          | Sorted existing directories and supported note paths.                                                                |
 | `hubble_search`  | `searchPage` → discovery and note reads                   | Matching source lines, with a continuation offset when more exist.                                                   |
 | `hubble_read`    | `read` → path resolution and file read                    | A selected range of note lines.                                                                                      |
 | `hubble_create`  | `create` → filename selection and exclusive file creation | New note path; a document preview is available in Pi's TUI.                                                          |
@@ -130,7 +131,10 @@ sequenceDiagram
 Creation holds a vault-root queue while allocating a filename, then also holds
 the destination queue through writing and cleanup. Reads and edits use that same
 file queue. Exact edits preserve the UTF-8 BOM and the detected line-ending style.
-Discovery revalidates roots, directories, and note paths while skipping symlinks and Hubble's internal `.hubble` metadata directory.
+Discovery revalidates roots, directories, and note paths while skipping symlinks
+and Hubble's internal `.hubble` metadata directory. Direct path operations reject
+that reserved directory. Creation revalidates its folder after `mkdir` and its
+opened destination before writing note content.
 
 These are in-process queues shared with Pi, not locks acquired by Hubble.
 External-save detection is optimistic: another application can still save between

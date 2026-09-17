@@ -75,6 +75,8 @@ current working directory.
 
 The extension registers these Pi tools:
 
+- `hubble_list()` lists existing vault directories and supported notes. Directory
+  paths end with `/`.
 - `hubble_search(query, limit?, offset?)` searches note contents case-insensitively and
   returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
   Capped results include a continuation notice and `nextOffset`; pass that value
@@ -85,7 +87,8 @@ The extension registers these Pi tools:
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
 - `hubble_create(title, content, filename?, folder?, format?)` creates a new
   note, optionally with an exact filename or in a vault-relative folder.
-  `format` is `markdown` (the default) or `html`.
+  `folder` accepts either a plain relative path or an `@hubble/<folder>/`
+  autocomplete reference. `format` is `markdown` (the default) or `html`.
 - `hubble_edit(path, edits)` applies one or more exact, unique,
   non-overlapping text replacements to Markdown or HTML. Every edit is matched
   against the original note rather than the result of an earlier replacement.
@@ -112,17 +115,21 @@ by writing and syncing a same-directory temporary file, closing it, and
 atomically renaming it over the original so a failed edit cannot truncate the
 note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
 are checked against path traversal and symlink escapes, and note discovery
-recursively scans the vault while skipping symlinks and Hubble's internal
-`.hubble` metadata directory. Discovery revalidates the
-root, directories, and note paths so replacements after opening the vault are rejected.
+recursively scans the vault while skipping symlinks. Hubble's internal root
+`.hubble` metadata directory is reserved: discovery skips it and direct note
+operations reject it. Discovery revalidates the root, directories, and note
+paths so replacements after opening the vault are rejected. Creation also
+revalidates newly opened files before writing content, preventing a replaced
+parent directory from redirecting note contents outside the vault.
 
 ## Interactive discovery
 
 - `@hubble/` autocomplete for referencing vault notes and directories. Note
   selections become ordinary Pi file attachments; directory selections remain
-  `@hubble/<folder>/` references suitable for destination instructions. Empty
-  directories are included. Discovery is cached for up to one second, while
-  explicit Tab completion always rescans so paths added elsewhere during the
+  `@hubble/<folder>/` references suitable for destination instructions. Folder
+  references containing whitespace are quoted and can be passed directly to
+  `hubble_create`. Empty directories are included. Discovery is cached for up
+  to one second, while explicit Tab completion always rescans so paths added elsewhere during the
   session appear immediately. Discovery is also refreshed after this extension
   creates a note. Suggested paths are rechecked even when cached. After typing
   a folder prefix, suggestions show only the remaining path so endings remain

@@ -59,6 +59,8 @@ export type VaultPathReason =
   | "escape"
   | "symlink-escape"
   | "not-directory"
+  | "invalid-reference"
+  | "reserved"
   | "unsupported-note-format"
   | "filesystem";
 

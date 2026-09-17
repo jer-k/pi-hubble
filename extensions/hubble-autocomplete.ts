@@ -1,9 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, fuzzyFilter } from "@earendil-works/pi-tui";
 import { Result } from "better-result";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 import type { GetVault } from "./hubble-config.ts";
-import { resolveVaultDirectory, resolveVaultPath } from "./hubble-paths.ts";
+import { formatVaultDirectoryReference, resolveVaultDirectory, resolveVaultPath } from "./hubble-paths.ts";
 import { attachmentValue } from "./hubble-ui.ts";
 import type {
   NoteReference,
@@ -14,6 +16,7 @@ import type {
 } from "./hubble-vault.ts";
 
 const MAX_AUTOCOMPLETE_ITEMS = 50;
+const StringValue = Type.String();
 
 /** Returns the path portion not already represented by a scoped autocomplete query. */
 function scopedDisplayPath(path: string, query: string): string {
@@ -27,9 +30,71 @@ function scopedDisplayPath(path: string, query: string): string {
   return path.toLowerCase().startsWith(typedDirectory.toLowerCase()) ? path.slice(typedDirectory.length) : path;
 }
 
-/** Extracts an active @hubble mention from the text before the cursor. */
+/** Extracts an active unquoted or double-quoted @hubble mention from the text before the cursor. */
 function extractHubblePrefix(textBeforeCursor: string): string | undefined {
-  return textBeforeCursor.match(/(?:^|[ \t])(@hubble(?:\/[^\s]*)?)$/u)?.[1];
+  const quoted = textBeforeCursor.match(/(?:^|[ \t])("@hubble(?:\/(?:[^"\\]|\\.)*)?)$/u)?.[1];
+  return quoted ?? textBeforeCursor.match(/(?:^|[ \t])(@hubble(?:\/[^\s]*)?)$/u)?.[1];
+}
+
+/** Returns the decoded path query from an active Hubble mention. */
+function hubbleQuery(prefix: string): string {
+  let reference = prefix;
+
+  if (prefix.startsWith('"')) {
+    const decoded = Result.try({
+      try: () => JSON.parse(`${prefix}"`),
+      catch: () => undefined,
+    });
+    reference = Result.isOk(decoded) && Value.Check(StringValue, decoded.value) ? decoded.value : prefix.slice(1);
+  }
+
+  return reference.startsWith("@hubble/") ? reference.slice("@hubble/".length) : "";
+}
+
+/** Applies a symbolic Hubble directory completion without treating it as a filesystem attachment. */
+function applyHubbleDirectoryCompletion(
+  lines: string[],
+  cursorLine: number,
+  cursorCol: number,
+  value: string,
+  prefix: string
+) {
+  const currentLine = lines[cursorLine] ?? "";
+  const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+  const afterCursor = currentLine.slice(cursorCol);
+  const adjustedAfterCursor =
+    prefix.startsWith('"@hubble/') && afterCursor.startsWith('"') ? afterCursor.slice(1) : afterCursor;
+  const completed = [...lines];
+  completed[cursorLine] = `${beforePrefix}${value}${adjustedAfterCursor}`;
+  const quotedDirectory = value.startsWith('"@hubble/') && value.endsWith('"');
+
+  return {
+    lines: completed,
+    cursorLine,
+    cursorCol: beforePrefix.length + value.length - (quotedDirectory ? 1 : 0),
+  };
+}
+
+/** Replaces a quoted Hubble folder prefix with an ordinary Pi note attachment. */
+function applyNoteCompletionFromQuotedFolder(
+  lines: string[],
+  cursorLine: number,
+  cursorCol: number,
+  value: string,
+  prefix: string
+) {
+  const currentLine = lines[cursorLine] ?? "";
+  const beforePrefix = currentLine.slice(0, cursorCol - prefix.length);
+  const afterCursor = currentLine.slice(cursorCol);
+  const adjustedAfterCursor = afterCursor.startsWith('"') ? afterCursor.slice(1) : afterCursor;
+  const completed = [...lines];
+  completed[cursorLine] = `${beforePrefix}${value} ${adjustedAfterCursor}`;
+
+  return {
+    lines: completed,
+    cursorLine,
+    cursorCol: beforePrefix.length + value.length + 1,
+  };
 }
 
 type HubbleAutocompleteEntry =
@@ -75,7 +140,10 @@ async function autocompleteItems(vault: Vault, entries: VaultEntries, query: str
     const path = entryPath(entry);
 
     return {
-      value: entry.kind === "directory" ? `@hubble/${path}` : attachmentValue(entry.reference.absolute),
+      value:
+        entry.kind === "directory"
+          ? formatVaultDirectoryReference(entry.reference)
+          : attachmentValue(entry.reference.absolute),
       // Omitting descriptions lets Pi allocate the full popup width to long
       // paths instead of restricting labels to its 32-column primary column.
       label: query.includes("/") ? scopedDisplayPath(path, query) : `@hubble/${path}`,
@@ -120,7 +188,7 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
             return { prefix, items: [] };
           }
 
-          const query = prefix.startsWith("@hubble/") ? prefix.slice("@hubble/".length) : "";
+          const query = hubbleQuery(prefix);
 
           if (
             options.force ||
@@ -155,8 +223,16 @@ export function registerHubbleAutocomplete(pi: ExtensionAPI, getVault: GetVault,
           const items = await autocompleteItems(vault.value, entries.value, query);
           return { prefix, items: options.signal.aborted ? [] : items };
         },
-        /** Reuses Pi's completion insertion behavior for the selected suggestion. */
+        /** Inserts symbolic directories directly and delegates ordinary note attachments to Pi. */
         applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+          if (item.value.startsWith("@hubble/") || item.value.startsWith('"@hubble/')) {
+            return applyHubbleDirectoryCompletion(lines, cursorLine, cursorCol, item.value, prefix);
+          }
+
+          if (prefix.startsWith('"@hubble/')) {
+            return applyNoteCompletionFromQuotedFolder(lines, cursorLine, cursorCol, item.value, prefix);
+          }
+
           return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
         },
         /** Preserves Pi's decision about whether file completion should trigger. */

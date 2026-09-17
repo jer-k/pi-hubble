@@ -281,6 +281,11 @@ test("discovers, reads, searches, and edits Markdown and HTML notes", async () =
   await writeFile(join(root, ".hubble", "deleting", "deleted.md"), "deleted", "utf8");
   const vault = await vaultAt(root);
 
+  const metadataRead = await vault.read(".hubble/deleting/deleted.md");
+  expect(metadataRead).toMatchObject({ status: "error", error: { _tag: "VaultPathError", reason: "reserved" } });
+  const metadataEdit = await vault.edit(".hubble/deleting/deleted.md", [{ oldText: "deleted", newText: "changed" }]);
+  expect(metadataEdit).toMatchObject({ status: "error", error: { _tag: "VaultPathError", reason: "reserved" } });
+
   const discovered = await vault.discover();
   expect(discovered.status).toBe("ok");
 
@@ -365,6 +370,22 @@ test("creates notes in optional folders and rejects invalid edits", async () => 
   if (nested.status === "ok") {
     expect(nested.value.relative).toBe("research/incident response/nested-note.md");
   }
+
+  const referenced = await vault.create("Referenced Note", "body", '"@hubble/research/incident response/"');
+  expect(referenced.status).toBe("ok");
+
+  if (referenced.status === "ok") {
+    expect(referenced.value.relative).toBe("research/incident response/referenced-note.md");
+  }
+
+  const metadata = await vault.create("Internal", "", ".hubble/deleting");
+  expect(metadata).toMatchObject({ status: "error", error: { _tag: "VaultPathError", reason: "reserved" } });
+
+  const malformedReference = await vault.create("Malformed", "", '"@hubble/research/');
+  expect(malformedReference).toMatchObject({
+    status: "error",
+    error: { _tag: "VaultPathError", reason: "invalid-reference" },
+  });
 
   const traversal = await vault.create("Escape", "", "../outside");
   expect(traversal.status).toBe("error");

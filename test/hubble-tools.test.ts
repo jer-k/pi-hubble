@@ -15,8 +15,9 @@ type ToolResult = { content: Array<{ type?: "text"; text: string }>; details: ob
 
 type RegisteredTestTool = Pick<ToolDefinition, "execute" | "prepareArguments" | "renderCall" | "renderResult">;
 
-type HubbleToolName = "hubble_search" | "hubble_read" | "hubble_create" | "hubble_edit";
+type HubbleToolName = "hubble_list" | "hubble_search" | "hubble_read" | "hubble_create" | "hubble_edit";
 interface RegisteredHubbleTools {
+  readonly hubble_list: RegisteredTestTool;
   readonly hubble_search: RegisteredTestTool;
   readonly hubble_read: RegisteredTestTool;
   readonly hubble_create: RegisteredTestTool;
@@ -61,6 +62,7 @@ function register(getVault: GetVault): RegisteredHubbleTools {
     return tool;
   };
   return {
+    hubble_list: registeredTool("hubble_list"),
     hubble_search: registeredTool("hubble_search"),
     hubble_read: registeredTool("hubble_read"),
     hubble_create: registeredTool("hubble_create"),
@@ -85,10 +87,10 @@ function plainRender(component: RenderComponent): string {
   return component.render(200).join("\n").replaceAll(ansiColor, "");
 }
 
-test("executes create, read, edit, and search tools", async () => {
+test("executes list, create, read, edit, and search tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-"));
   const tools = register(async () => openVault(root));
-  expect(Object.keys(tools)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+  expect(Object.keys(tools)).toEqual(["hubble_list", "hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
 
   const created = await tools.hubble_create.execute(
     "create",
@@ -100,6 +102,15 @@ test("executes create, read, edit, and search tools", async () => {
   expect(firstText(created)).toBe("Created Hubble note: first-note.md");
   const path = join(root, "first-note.md");
   expect(await readFile(path, "utf8")).toBe("# First Note\n\nAlpha\nBeta");
+
+  const listed = await tools.hubble_list.execute("list", {}, undefined, undefined, context);
+  expect(firstText(listed)).toBe("first-note.md");
+  expect(listed.details).toEqual({
+    noteCount: 1,
+    directoryCount: 0,
+    truncated: false,
+    fullOutputPath: undefined,
+  });
 
   const read = await tools.hubble_read.execute(
     "read",
@@ -136,6 +147,21 @@ test("executes create, read, edit, and search tools", async () => {
   );
   expect(firstText(search)).toContain("first-note.md:3: Updated");
   expect(search.details).toMatchObject({ query: "updated", matchCount: 1, truncated: false });
+});
+
+test("passes autocomplete folder references directly to hubble_create", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-folder-reference-"));
+  const tools = register(async () => openVault(root));
+  const created = await tools.hubble_create.execute(
+    "create-reference",
+    { title: "Referenced", content: "body", folder: '"@hubble/incident response/"' },
+    undefined,
+    undefined,
+    context
+  );
+
+  expect(firstText(created)).toBe("Created Hubble note: incident response/referenced.md");
+  expect(await readFile(join(root, "incident response", "referenced.md"), "utf8")).toContain("# Referenced");
 });
 
 test("renders expandable Markdown and HTML create previews with resolved success paths", async () => {

@@ -381,7 +381,13 @@ test("makes every Hubble tool available through the Pi SDK runtime", async () =>
   try {
     await session.bindExtensions({ mode: "print" });
 
-    expect(session.getActiveToolNames()).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+    expect(session.getActiveToolNames()).toEqual([
+      "hubble_list",
+      "hubble_search",
+      "hubble_read",
+      "hubble_create",
+      "hubble_edit",
+    ]);
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });
@@ -412,6 +418,10 @@ test("creates a Hubble note through the Pi SDK runtime", async () => {
     expect(await readFile(join(vault, "checks", "integration-custom-name.md"), "utf8")).toBe(
       "# Integration Tool Note\n\nAlpha\nBeta"
     );
+
+    const listed = await getTool(session, "hubble_list").execute("list", {}, undefined, undefined);
+    expect(toolText(listed)).toBe("checks/\nchecks/integration-custom-name.md");
+    expect(listed.details).toMatchObject({ noteCount: 1, directoryCount: 1, truncated: false });
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });

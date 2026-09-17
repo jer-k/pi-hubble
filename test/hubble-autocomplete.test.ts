@@ -107,9 +107,11 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-autocomplete-"));
   await mkdir(join(root, "pi-hubble"));
   await mkdir(join(root, "new-dir"));
+  await mkdir(join(root, "incident response"));
   await writeFile(join(root, "alpha.md"), "alpha", "utf8");
   await writeFile(join(root, "beta.md"), "beta", "utf8");
   await writeFile(join(root, "page.HTML"), "<p>page</p>", "utf8");
+  await writeFile(join(root, "incident response", "timeline.md"), "timeline", "utf8");
   await writeFile(join(root, "pi-hubble", "long-note-name.html"), "<p>long</p>", "utf8");
   const { pi, getSessionStart } = createPi();
   registerHubbleAutocomplete(pi, async () => openVault(root));
@@ -148,13 +150,49 @@ test("suggests vault notes, delegates unrelated text, and handles cancellation",
   expect(suggestions.items.map((item: { label: string }) => item.label)).toEqual([
     "@hubble/alpha.md",
     "@hubble/beta.md",
+    "@hubble/incident response/",
+    "@hubble/incident response/timeline.md",
     "@hubble/new-dir/",
     "@hubble/page.HTML",
     "@hubble/pi-hubble/",
     "@hubble/pi-hubble/long-note-name.html",
   ]);
   expect(suggestions.items.at(0)?.value).toBe(`@${join(await realpath(root), "alpha.md")}`);
-  expect(suggestions.items.at(2)?.value).toBe("@hubble/new-dir/");
+  expect(suggestions.items.at(2)?.value).toBe('"@hubble/incident response/"');
+  expect(suggestions.items.at(4)?.value).toBe("@hubble/new-dir/");
+
+  const directorySuggestion = suggestions.items.at(2);
+
+  if (directorySuggestion === undefined) {
+    throw new Error("Expected a directory suggestion");
+  }
+
+  expect(provider.applyCompletion(["Create in @hubble/"], 0, 18, directorySuggestion, "@hubble/")).toEqual({
+    lines: ['Create in "@hubble/incident response/"'],
+    cursorLine: 0,
+    cursorCol: 37,
+  });
+
+  const quotedScoped = await provider.getSuggestions(['"@hubble/incident response/'], 0, 27, {
+    signal: new AbortController().signal,
+  });
+  expect(quotedScoped?.items.map((item) => item.label)).toEqual(["timeline.md"]);
+
+  const timelineSuggestion = quotedScoped?.items.at(0);
+
+  if (timelineSuggestion === undefined || quotedScoped === null) {
+    throw new Error("Expected a note inside the quoted directory");
+  }
+
+  const completedTimeline = provider.applyCompletion(
+    ['Create in "@hubble/incident response/"'],
+    0,
+    37,
+    timelineSuggestion,
+    quotedScoped.prefix
+  );
+  expect(completedTimeline.lines).toEqual([`Create in ${timelineSuggestion.value} `]);
+  expect(completedTimeline.cursorCol).toBe(11 + timelineSuggestion.value.length);
 
   const scoped = await provider.getSuggestions(["@hubble/pi-hubble/"], 0, 18, {
     signal: new AbortController().signal,
