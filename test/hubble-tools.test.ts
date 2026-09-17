@@ -164,6 +164,34 @@ test("passes autocomplete folder references directly to hubble_create", async ()
   expect(await readFile(join(root, "incident response", "referenced.md"), "utf8")).toContain("# Referenced");
 });
 
+test("restricts tool search recursively to an autocomplete folder reference", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-search-folder-"));
+  const vault = await openVault(root);
+
+  if (vault.status === "error") {
+    throw vault.error;
+  }
+
+  await vault.value.create("Direct", "flat growth direct", "effect prophet/tickets");
+  await vault.value.create("Nested", "flat growth nested", "effect prophet/tickets/TODO");
+  await vault.value.create("Outside", "flat growth outside", "effect prophet");
+  const tools = register(async () => vault);
+  const folder = '"@hubble/effect prophet/tickets/"';
+  const search = await tools.hubble_search.execute(
+    "search-folder",
+    { query: "flat growth", folder },
+    undefined,
+    undefined,
+    context
+  );
+  const text = firstText(search);
+
+  expect(text).toContain("effect prophet/tickets/direct.md:3: flat growth direct");
+  expect(text).toContain("effect prophet/tickets/TODO/nested.md:3: flat growth nested");
+  expect(text).not.toContain("effect prophet/outside.md");
+  expect(search.details).toMatchObject({ folder, query: "flat growth", matchCount: 2, truncated: false });
+});
+
 test("renders expandable Markdown and HTML create previews with resolved success paths", async () => {
   initTheme("dark");
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-render-"));
@@ -332,6 +360,15 @@ test("reports validation failures and honors cancellation", async () => {
   await expect(
     tools.hubble_read.execute("read", { path: "not-a-note.txt" }, undefined, undefined, context)
   ).rejects.toThrow("supported format");
+  await expect(
+    tools.hubble_search.execute(
+      "search-folder",
+      { query: "anything", folder: "../outside" },
+      undefined,
+      undefined,
+      context
+    )
+  ).rejects.toThrow("escapes the vault");
 
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));

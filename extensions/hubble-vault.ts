@@ -23,6 +23,7 @@ import {
   assertNotePath,
   canonicalVaultRoot,
   type HubbleNoteFormat,
+  resolveVaultDirectory,
   resolveVaultPath,
   VaultRoot,
 } from "./hubble-paths.ts";
@@ -51,9 +52,13 @@ export interface NoteSearchResult {
 export type VaultReadResult = ResultType<ReadNote, VaultNoteError>;
 /** Result of searching every supported note. */
 export type VaultSearchResult = ResultType<NoteSearchResult[], DiscoveryError | VaultNoteError | NoteValidationError>;
-/** A matching-line window; offsets are 1-based and limits are between 1 and 500. */
+/** A matching-line window, optionally restricted to one recursive vault folder. */
 export interface SearchPageOptions {
+  /** Optional vault-relative folder or `@hubble/<folder>/` reference to search recursively. */
+  readonly folder?: string;
+  /** One-based matching-line offset. */
   readonly offset: number;
+  /** Maximum matching lines to retain; must be between 1 and 500. */
   readonly limit: number;
 }
 
@@ -149,17 +154,25 @@ export class Vault extends VaultRoot {
       return Result.err(new NoteValidationError({ reason: "query", message: "query must not be empty." }));
     }
 
+    const directory = page?.folder === undefined ? undefined : await resolveVaultDirectory(this, page.folder);
+
+    if (directory && Result.isError(directory)) {
+      return directory;
+    }
+
     const files = await this.list(signal);
 
     if (Result.isError(files)) {
       return files;
     }
 
+    const folderPrefix = directory?.value.relative ? `${directory.value.relative}/` : "";
+    const notes = folderPrefix ? files.value.filter((note) => note.relative.startsWith(folderPrefix)) : files.value;
     const results: NoteSearchResult[] = [];
     let skipped = 0;
     let retained = 0;
 
-    for (const note of files.value) {
+    for (const note of notes) {
       if (signal?.aborted) {
         throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
       }

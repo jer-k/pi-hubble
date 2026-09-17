@@ -496,13 +496,14 @@ test("searches Hubble notes through the Pi SDK runtime", async () => {
   const notePath = join(vault, "checks", "integration-custom-name.md");
   await mkdir(dirname(notePath), { recursive: true });
   await writeFile(notePath, "# Integration Tool Note\n\nUpdated Alpha\nUpdated Beta\nGamma", "utf8");
+  await writeFile(join(vault, "outside.md"), "Updated outside", "utf8");
   const session = await createIntegrationSession(workspace, vault);
 
   try {
     await session.bindExtensions({ mode: "print" });
     const search = await getTool(session, "hubble_search").execute(
       "search",
-      { query: "UPDATED", limit: 10 },
+      { query: "UPDATED", folder: "@hubble/checks/", limit: 10 },
       undefined,
       undefined
     );
@@ -510,7 +511,12 @@ test("searches Hubble notes through the Pi SDK runtime", async () => {
     expect(toolText(search)).toBe(
       "checks/integration-custom-name.md:3: Updated Alpha\nchecks/integration-custom-name.md:4: Updated Beta"
     );
-    expect(search.details).toMatchObject({ query: "updated", matchCount: 2, truncated: false });
+    expect(search.details).toMatchObject({
+      folder: "@hubble/checks/",
+      query: "updated",
+      matchCount: 2,
+      truncated: false,
+    });
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });

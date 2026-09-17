@@ -51,20 +51,21 @@ The agent tools are defined in [hubble-tools.ts](extensions/hubble-tools.ts).
 Pi validates their Typebox schemas; handlers translate arguments into `Vault`
 operations and format the results for the agent.
 
-| Entry point      | Route through `Vault`                                     | Result                                                                                                               |
-| ---------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `hubble_list`    | `discover` → safe recursive scan                          | Sorted existing directories and supported note paths.                                                                |
-| `hubble_search`  | `searchPage` → discovery and note reads                   | Matching source lines, with a continuation offset when more exist.                                                   |
-| `hubble_read`    | `read` → path resolution and file read                    | A selected range of note lines.                                                                                      |
-| `hubble_create`  | `create` → filename selection and exclusive file creation | New note path; a document preview is available in Pi's TUI.                                                          |
-| `hubble_edit`    | `edit` → path resolution and exact replacements           | Updated note path and edit count.                                                                                    |
-| `/hubble find`   | `list` → fuzzy filename filtering                         | Picker selection becomes a Pi `@` attachment.                                                                        |
-| `/hubble search` | `search` → all matching notes                             | Content matches determine which notes appear in the picker.                                                          |
-| `/hubble new`    | `create` for a supplied title                             | Creates a blank note and attaches it. With a blank title, asks the idle agent to draft a note using `hubble_create`. |
-| `@hubble/`       | Cached `discover` → fuzzy filtering → path revalidation   | Up to 50 notes or directories; notes attach normally and directories remain Hubble-relative destination references.  |
+| Entry point      | Route through `Vault`                                       | Result                                                                                                               |
+| ---------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `hubble_list`    | `discover` → safe recursive scan                            | Sorted existing directories and supported note paths.                                                                |
+| `hubble_search`  | `searchPage` → folder resolution, discovery, and note reads | Matching source lines from the optional recursive folder, with a continuation offset when more exist.                |
+| `hubble_read`    | `read` → path resolution and file read                      | A selected range of note lines.                                                                                      |
+| `hubble_create`  | `create` → filename selection and exclusive file creation   | New note path; a document preview is available in Pi's TUI.                                                          |
+| `hubble_edit`    | `edit` → path resolution and exact replacements             | Updated note path and edit count.                                                                                    |
+| `/hubble find`   | `list` → fuzzy filename filtering                           | Picker selection becomes a Pi `@` attachment.                                                                        |
+| `/hubble search` | `search` → all matching notes                               | Content matches determine which notes appear in the picker.                                                          |
+| `/hubble new`    | `create` for a supplied title                               | Creates a blank note and attaches it. With a blank title, asks the idle agent to draft a note using `hubble_create`. |
+| `@hubble/`       | Cached `discover` → fuzzy filtering → path revalidation     | Up to 50 notes or directories; notes attach normally and directories remain Hubble-relative destination references.  |
 
-Tool searches retain one page and stop reading after one additional match proves
-there is another page. They still discover the note paths first. Interactive
+Tool searches can resolve a vault-relative folder scope, retain one page, and stop
+reading after one additional match proves there is another page. They still discover
+safe note paths first, then read only notes inside the requested folder. Interactive
 content search uses the unbounded `search` method to populate the picker.
 Autocomplete discovers safe directories as well as supported notes, including
 empty directories. It caches ordinary discovery for up to one second. Explicit
