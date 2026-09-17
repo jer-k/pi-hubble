@@ -30,6 +30,7 @@ test.each(["success", "failure"] as const)("coordinates creation with the destin
         return {
           chmod: handle.chmod.bind(handle),
           close: handle.close.bind(handle),
+          stat: handle.stat.bind(handle),
           sync: handle.sync.bind(handle),
           async writeFile(body, encoding) {
             opened.resolve();
@@ -83,6 +84,84 @@ test.each(["success", "failure"] as const)("coordinates creation with the destin
   }
 });
 
+test("revalidates a created note before writing through a replaced folder", async () => {
+  const base = await fs.mkdtemp(join(tmpdir(), "hubble-create-folder-race-"));
+  const root = join(base, "vault");
+  const outside = join(base, "outside");
+  await fs.mkdir(join(root, "folder"), { recursive: true });
+  await fs.mkdir(outside);
+  let replaced = false;
+
+  try {
+    const opened = await Vault.open(root, {
+      ...fs,
+      async open(path, flags, mode) {
+        if (!replaced && path.endsWith("/folder/raced.md")) {
+          replaced = true;
+          await fs.rename(join(root, "folder"), join(root, "original-folder"));
+          await fs.symlink(outside, join(root, "folder"));
+        }
+
+        return fs.open(path, flags, mode);
+      },
+    });
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
+    const result = await opened.value.create("Raced", "private body", "folder");
+    expect(result).toMatchObject({
+      status: "error",
+      error: {
+        _tag: "NoteWriteError",
+        cause: { _tag: "VaultPathError", reason: "symlink-escape" },
+      },
+    });
+    expect(await fs.readdir(outside)).toEqual([]);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("does not write note content when a replaced folder is restored after open", async () => {
+  const base = await fs.mkdtemp(join(tmpdir(), "hubble-create-folder-restore-race-"));
+  const root = join(base, "vault");
+  const outside = join(base, "outside");
+  await fs.mkdir(join(root, "folder"), { recursive: true });
+  await fs.mkdir(outside);
+  let replaced = false;
+
+  try {
+    const opened = await Vault.open(root, {
+      ...fs,
+      async open(path, flags, mode) {
+        if (!replaced && path.endsWith("/folder/raced.md")) {
+          replaced = true;
+          await fs.rename(join(root, "folder"), join(root, "original-folder"));
+          await fs.symlink(outside, join(root, "folder"));
+          const handle = await fs.open(path, flags, mode);
+          await fs.unlink(join(root, "folder"));
+          await fs.rename(join(root, "original-folder"), join(root, "folder"));
+          return handle;
+        }
+
+        return fs.open(path, flags, mode);
+      },
+    });
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
+    const result = await opened.value.create("Raced", "private body", "folder");
+    expect(result).toMatchObject({ status: "error", error: { _tag: "NoteWriteError" } });
+    expect(await fs.readFile(join(outside, "raced.md"), "utf8")).toBe("");
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
 test.each(["save", "replace", "delete", "unchanged"] as const)(
   "checks external %s before committing an edit",
   async (action) => {
@@ -97,6 +176,7 @@ test.each(["save", "replace", "delete", "unchanged"] as const)(
           return {
             chmod: handle.chmod.bind(handle),
             close: handle.close.bind(handle),
+            stat: handle.stat.bind(handle),
             writeFile: handle.writeFile.bind(handle),
             async sync() {
               await handle.sync();

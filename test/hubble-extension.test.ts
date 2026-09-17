@@ -39,7 +39,13 @@ test("registers the flag, command, autocomplete, and all tools lazily", async ()
   ]);
   expect(commands).toEqual(["hubble"]);
   expect(events).toEqual(["session_start"]);
-  expect(tools.map((tool) => tool.name)).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+  expect(tools.map((tool) => tool.name)).toEqual([
+    "hubble_list",
+    "hubble_search",
+    "hubble_read",
+    "hubble_create",
+    "hubble_edit",
+  ]);
   expect(getFlagCalls).toBe(0);
 
   const context = { cwd: process.cwd(), isProjectTrusted: () => true };

@@ -2,6 +2,8 @@ import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { Result, type Result as ResultType } from "better-result";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 import {
   MissingFileError,
@@ -14,6 +16,12 @@ import {
 
 /** A supported Hubble note serialization format. */
 export type HubbleNoteFormat = "markdown" | "html";
+
+/** Root-relative directory reserved for Hubble's internal metadata. */
+export const HUBBLE_METADATA_DIRECTORY = ".hubble";
+
+const JsonString = Type.String();
+const HUBBLE_REFERENCE_PREFIX = "@hubble/";
 
 declare const hubblePathBrand: unique symbol;
 
@@ -219,13 +227,54 @@ async function assertExistingAncestorInside(
   }
 }
 
+/** Parses a plain folder path or an autocomplete-produced Hubble folder reference. */
+function parseFolderInput(userPath: string): ResultType<string, VaultPathError> {
+  const trimmed = userPath.trim();
+  let parsed = trimmed;
+
+  if (trimmed.startsWith('"') || trimmed.endsWith('"')) {
+    const unquoted = Result.try({
+      try: () => JSON.parse(trimmed),
+      catch: (cause) => pathError(userPath, "invalid-reference", "The Hubble folder reference is not valid.", cause),
+    });
+
+    if (Result.isError(unquoted)) {
+      return unquoted;
+    }
+
+    if (!Value.Check(JsonString, unquoted.value)) {
+      return Result.err(pathError(userPath, "invalid-reference", "The Hubble folder reference is not valid."));
+    }
+
+    parsed = unquoted.value;
+  }
+
+  if (parsed === "@hubble" || parsed === HUBBLE_REFERENCE_PREFIX) {
+    return Result.ok("");
+  }
+
+  return Result.ok(parsed.startsWith(HUBBLE_REFERENCE_PREFIX) ? parsed.slice(HUBBLE_REFERENCE_PREFIX.length) : parsed);
+}
+
+/** Reports whether a canonical relative path targets Hubble's internal metadata. */
+function isMetadataPath(relativePath: string): boolean {
+  return relativePath.split("/")[0]?.toLowerCase() === HUBBLE_METADATA_DIRECTORY;
+}
+
 /** Resolves a note or folder path while enforcing vault containment and symlink safety. */
 async function resolveContained(
   vault: VaultRoot,
   userPath: string,
   policy: "note" | "folder"
 ): Promise<VaultPathResult> {
-  const normalized = policy === "note" && userPath.startsWith("@") ? userPath.slice(1) : userPath.trim();
+  const folderInput = policy === "folder" ? parseFolderInput(userPath) : undefined;
+
+  if (folderInput && Result.isError(folderInput)) {
+    return folderInput;
+  }
+
+  const normalized =
+    policy === "folder" ? (folderInput?.value ?? "") : userPath.startsWith("@") ? userPath.slice(1) : userPath.trim();
 
   if (!normalized) {
     return policy === "folder"
@@ -247,6 +296,12 @@ async function resolveContained(
 
   if (!isInside(vault.root, absolute)) {
     return Result.err(pathError(normalized, "escape", "Hubble path escapes the vault."));
+  }
+
+  const lexicalRelative = relative(vault.root, absolute).split(sep).join("/");
+
+  if (isMetadataPath(lexicalRelative)) {
+    return Result.err(pathError(normalized, "reserved", "Hubble's internal metadata directory is reserved."));
   }
 
   const resolvedTarget = await Result.tryPromise({
@@ -296,7 +351,19 @@ async function resolveContained(
   }
 
   const canonical = Result.isOk(resolvedTarget) ? resolvedTarget.value : absolute;
-  return Result.ok(containedPath(canonical, relative(vault.root, canonical).split(sep).join("/")));
+  const canonicalRelative = relative(vault.root, canonical).split(sep).join("/");
+
+  if (isMetadataPath(canonicalRelative)) {
+    return Result.err(pathError(normalized, "reserved", "Hubble's internal metadata directory is reserved."));
+  }
+
+  return Result.ok(containedPath(canonical, canonicalRelative));
+}
+
+/** Formats a safe directory as the symbolic reference inserted by Hubble autocomplete. */
+export function formatVaultDirectoryReference(path: HubblePath): string {
+  const reference = `${HUBBLE_REFERENCE_PREFIX}${path.relative}/`;
+  return /[\s"]/u.test(reference) ? JSON.stringify(reference) : reference;
 }
 
 /** Resolves a user-supplied note path relative to the vault. */

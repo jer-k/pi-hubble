@@ -25,6 +25,7 @@ import {
 import {
   assertNotePath,
   canonicalVaultRoot,
+  HUBBLE_METADATA_DIRECTORY,
   type HubbleNoteFormat,
   type HubblePath,
   isNotePath,
@@ -37,6 +38,7 @@ import {
 export interface NoteFileHandle {
   chmod(mode: number): Promise<void>;
   close(): Promise<void>;
+  stat(): Promise<Stats>;
   sync(): Promise<void>;
   writeFile(data: string, encoding: "utf8"): Promise<void>;
 }
@@ -61,6 +63,15 @@ export interface HubbleEdit {
 
 /** A vault-contained, canonical note path. */
 export type NoteReference = HubblePath;
+
+/** A vault-contained, canonical directory path. */
+export type VaultDirectoryReference = HubblePath;
+
+/** Supported notes and directories found during one safe vault scan. */
+export interface VaultEntries {
+  readonly notes: ReadonlyArray<NoteReference>;
+  readonly directories: ReadonlyArray<VaultDirectoryReference>;
+}
 
 /** Turns a note title into a filesystem-safe filename slug. */
 export function slugifyTitle(title: string): string {
@@ -266,6 +277,75 @@ interface CreateNoteDestination {
   readonly format: HubbleNoteFormat;
 }
 
+/** Revalidates a newly opened create target before any note content is written. */
+async function revalidateOpenedCreateTarget(
+  vault: VaultRoot,
+  requestedPath: string,
+  target: HubblePath,
+  title: string,
+  handle: NoteFileHandle,
+  fileSystem: NoteFileSystem
+): Promise<ResultType<void, NoteWriteError>> {
+  const checked = await resolveVaultPath(vault, requestedPath);
+
+  if (Result.isError(checked)) {
+    return Result.err(
+      new NoteWriteError({
+        operation: "create",
+        path: target.relative,
+        title,
+        cause: checked.error,
+        message: "The Hubble note destination changed before it could be written.",
+      })
+    );
+  }
+
+  if (checked.value.absolute !== target.absolute) {
+    return Result.err(
+      new NoteWriteError({
+        operation: "create",
+        path: target.relative,
+        title,
+        cause: new Error(`Create target changed from ${target.absolute} to ${checked.value.absolute}.`),
+        message: "The Hubble note destination changed before it could be written.",
+      })
+    );
+  }
+
+  const identity = await Result.tryPromise({
+    try: async () => ({ opened: await handle.stat(), resolved: await fileSystem.stat(target.absolute) }),
+    catch: (cause) =>
+      new NoteWriteError({
+        operation: "create",
+        path: target.relative,
+        title,
+        cause: mapFileSystemError(target.absolute, cause),
+        message: "Could not verify the opened Hubble note destination.",
+      }),
+  });
+
+  if (Result.isError(identity)) {
+    return identity;
+  }
+
+  if (
+    identity.value.opened.dev !== identity.value.resolved.dev ||
+    identity.value.opened.ino !== identity.value.resolved.ino
+  ) {
+    return Result.err(
+      new NoteWriteError({
+        operation: "create",
+        path: target.relative,
+        title,
+        cause: new Error("The opened file no longer matches the resolved Hubble note destination."),
+        message: "The Hubble note destination changed before it could be written.",
+      })
+    );
+  }
+
+  return Result.ok();
+}
+
 /** Validates an optional exact filename and resolves the document format used during creation. */
 function resolveCreateNoteDestination(
   filename: string | undefined,
@@ -377,7 +457,8 @@ export async function writeNewVaultFile(
     // Force the vault root through canonical resolution after mkdir. An empty
     // folder normally uses the root fast path, which is useful while the root
     // is missing but must not bypass revalidation before a note is opened.
-    const directory = await resolveVaultDirectory(vault, folder.trim() || ".");
+    const requestedFolder = folder.trim() || ".";
+    const directory = await resolveVaultDirectory(vault, requestedFolder);
 
     if (Result.isError(directory)) {
       return directory;
@@ -399,6 +480,13 @@ export async function writeNewVaultFile(
       return directoryCreated;
     }
 
+    const revalidatedDirectory = await resolveVaultDirectory(vault, requestedFolder);
+
+    if (Result.isError(revalidatedDirectory)) {
+      return revalidatedDirectory;
+    }
+
+    const safeDirectory = revalidatedDirectory.value;
     const slug = slugifyTitle(trimmedTitle);
     const extension = destination.value.format === "html" ? ".html" : ".md";
     const body = buildNewNoteDocument(trimmedTitle, content, destination.value.format);
@@ -407,8 +495,8 @@ export async function writeNewVaultFile(
     for (let suffix = 0; suffix < maximumAttempts; suffix++) {
       const candidateFilename =
         destination.value.filename ?? `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}${extension}`;
-      const requestedPath = directory.value.relative
-        ? `${directory.value.relative}/${candidateFilename}`
+      const requestedPath = safeDirectory.relative
+        ? `${safeDirectory.relative}/${candidateFilename}`
         : candidateFilename;
       const target = await resolveVaultPath(vault, requestedPath);
 
@@ -451,17 +539,27 @@ export async function writeNewVaultFile(
         let written: ResultType<void, NoteWriteError>;
         let closed: ResultType<void, NoteWriteError>;
         try {
-          written = await Result.tryPromise({
-            try: () => handle.writeFile(body, "utf8"),
-            catch: (cause) =>
-              new NoteWriteError({
-                operation: "create",
-                path: relativePath,
-                title: trimmedTitle,
-                cause: mapFileSystemError(absolute, cause),
-                message: "Could not write the Hubble note.",
-              }),
-          });
+          const revalidatedTarget = await revalidateOpenedCreateTarget(
+            vault,
+            requestedPath,
+            target.value,
+            trimmedTitle,
+            handle,
+            fileSystem
+          );
+          written = Result.isError(revalidatedTarget)
+            ? revalidatedTarget
+            : await Result.tryPromise({
+                try: () => handle.writeFile(body, "utf8"),
+                catch: (cause) =>
+                  new NoteWriteError({
+                    operation: "create",
+                    path: relativePath,
+                    title: trimmedTitle,
+                    cause: mapFileSystemError(absolute, cause),
+                    message: "Could not write the Hubble note.",
+                  }),
+              });
         } finally {
           closed = await Result.tryPromise({
             try: () => handle.close(),
@@ -503,7 +601,7 @@ export async function writeNewVaultFile(
     return Result.err(
       new NoteWriteError({
         operation: "create",
-        path: directory.value.relative || vault.root,
+        path: safeDirectory.relative || vault.root,
         title: trimmedTitle,
         cause: new Error("filename exhaustion"),
         message: "Could not find an unused Hubble filename.",
@@ -840,15 +938,18 @@ async function checkDiscoveryDirectory(directory: string): Promise<ResultType<vo
   return Result.ok();
 }
 
-/** Recursively discovers supported Hubble notes while ignoring symlinks. */
-export async function listNoteFiles(
+/** Recursively discovers supported Hubble notes and directories while ignoring symlinks. */
+export async function discoverVaultEntries(
   vault: VaultRoot,
   fileSystem: NoteFileSystem = nodeFileSystem,
   signal?: AbortSignal
-): Promise<ResultType<NoteReference[], DiscoveryError>> {
+): Promise<ResultType<VaultEntries, DiscoveryError>> {
   throwIfAborted(signal);
-  const files: NoteReference[] = [];
-  /** Walks one vault directory and adds its supported note files to the discovery list. */
+
+  const notes: NoteReference[] = [];
+  const directories: VaultDirectoryReference[] = [];
+
+  /** Walks one vault directory and adds its safe children to the discovery result. */
   async function visit(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
     throwIfAborted(signal);
     const checked = await checkDiscoveryDirectory(directory);
@@ -875,20 +976,43 @@ export async function listNoteFiles(
     for (const entry of entries.value) {
       throwIfAborted(signal);
 
-      if (entry.isSymbolicLink()) {
+      if (
+        entry.isSymbolicLink() ||
+        (directory === vault.root && entry.isDirectory() && entry.name.toLowerCase() === HUBBLE_METADATA_DIRECTORY)
+      ) {
         continue;
       }
 
       const absolute = join(directory, entry.name);
+      const relativePath = relative(vault.root, absolute);
 
       if (entry.isDirectory()) {
+        const checkedDirectory = await resolveVaultDirectory(vault, relativePath);
+
+        if (Result.isError(checkedDirectory)) {
+          return Result.err(
+            new VaultDiscoveryError({
+              path: absolute,
+              reason: "unsafe-path",
+              cause: checkedDirectory.error,
+              message: "A Hubble directory changed during discovery.",
+            })
+          );
+        }
+
+        // Ignore entries replaced by an internal symlink after readdir.
+        if (checkedDirectory.value.absolute !== absolute) {
+          continue;
+        }
+
+        directories.push(checkedDirectory.value);
         const visited = await visit(absolute);
 
         if (Result.isError(visited)) {
           return visited;
         }
       } else if (entry.isFile() && isNotePath(entry.name)) {
-        const checkedNote = await resolveVaultPath(vault, relative(vault.root, absolute));
+        const checkedNote = await resolveVaultPath(vault, relativePath);
 
         if (Result.isError(checkedNote)) {
           return Result.err(
@@ -903,7 +1027,7 @@ export async function listNoteFiles(
 
         // Ignore entries replaced by an internal symlink after readdir.
         if (checkedNote.value.absolute === absolute) {
-          files.push(checkedNote.value);
+          notes.push(checkedNote.value);
         }
       }
     }
@@ -929,7 +1053,7 @@ export async function listNoteFiles(
   });
 
   if (Result.isError(rootStat)) {
-    return MissingFileError.is(rootStat.error.cause) ? Result.ok(files) : rootStat;
+    return MissingFileError.is(rootStat.error.cause) ? Result.ok({ notes, directories }) : rootStat;
   }
 
   if (!rootStat.value.isDirectory()) {
@@ -948,5 +1072,18 @@ export async function listNoteFiles(
     return visited;
   }
 
-  return Result.ok(files.sort((a, b) => a.relative.localeCompare(b.relative)));
+  return Result.ok({
+    notes: notes.sort((a, b) => a.relative.localeCompare(b.relative)),
+    directories: directories.sort((a, b) => a.relative.localeCompare(b.relative)),
+  });
+}
+
+/** Recursively lists supported Hubble notes while ignoring symlinks. */
+export async function listNoteFiles(
+  vault: VaultRoot,
+  fileSystem: NoteFileSystem = nodeFileSystem,
+  signal?: AbortSignal
+): Promise<ResultType<NoteReference[], DiscoveryError>> {
+  const entries = await discoverVaultEntries(vault, fileSystem, signal);
+  return Result.isError(entries) ? entries : Result.ok([...entries.value.notes]);
 }

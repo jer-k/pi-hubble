@@ -381,7 +381,13 @@ test("makes every Hubble tool available through the Pi SDK runtime", async () =>
   try {
     await session.bindExtensions({ mode: "print" });
 
-    expect(session.getActiveToolNames()).toEqual(["hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+    expect(session.getActiveToolNames()).toEqual([
+      "hubble_list",
+      "hubble_search",
+      "hubble_read",
+      "hubble_create",
+      "hubble_edit",
+    ]);
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });
@@ -411,6 +417,59 @@ test("creates a Hubble note through the Pi SDK runtime", async () => {
     expect(created.details).toEqual({ path: "checks/integration-custom-name.md" });
     expect(await readFile(join(vault, "checks", "integration-custom-name.md"), "utf8")).toBe(
       "# Integration Tool Note\n\nAlpha\nBeta"
+    );
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("lists Hubble notes and directories through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-list-integration-"));
+  const vault = join(workspace, "vault");
+  await mkdir(join(vault, "empty", "nested"), { recursive: true });
+  await mkdir(join(vault, "projects"), { recursive: true });
+  await mkdir(join(vault, ".hubble", "internal"), { recursive: true });
+  await writeFile(join(vault, "alpha.md"), "# Alpha", "utf8");
+  await writeFile(join(vault, "projects", "page.html"), "<h1>Page</h1>", "utf8");
+  await writeFile(join(vault, "ignored.txt"), "not a note", "utf8");
+  await writeFile(join(vault, ".hubble", "internal", "hidden.md"), "# Hidden", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const listed = await getTool(session, "hubble_list").execute("list", {}, undefined, undefined);
+
+    expect(toolText(listed)).toBe("alpha.md\nempty/\nempty/nested/\nprojects/\nprojects/page.html");
+    expect(listed.details).toMatchObject({ noteCount: 2, directoryCount: 3, truncated: false });
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("creates a Hubble note in an autocomplete folder reference through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-create-folder-integration-"));
+  const vault = join(workspace, "vault");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const created = await getTool(session, "hubble_create").execute(
+      "create-folder-reference",
+      {
+        title: "Incident Timeline",
+        content: "First event",
+        folder: '"@hubble/incident response/"',
+      },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(created)).toBe("Created Hubble note: incident response/incident-timeline.md");
+    expect(created.details).toEqual({ path: "incident response/incident-timeline.md" });
+    expect(await readFile(join(vault, "incident response", "incident-timeline.md"), "utf8")).toBe(
+      "# Incident Timeline\n\nFirst event"
     );
   } finally {
     session.dispose();
@@ -507,6 +566,40 @@ test("searches Hubble notes through the Pi SDK runtime", async () => {
   }
 });
 
+test("restricts Hubble search recursively to a folder reference through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-search-folder-integration-"));
+  const vault = join(workspace, "vault");
+  await mkdir(join(vault, "incident response", "open"), { recursive: true });
+  await writeFile(join(vault, "incident response", "summary.md"), "Status: active", "utf8");
+  await writeFile(join(vault, "incident response", "open", "timeline.md"), "Status: active", "utf8");
+  await writeFile(join(vault, "outside.md"), "Status: active", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const folder = '"@hubble/incident response/"';
+    const search = await getTool(session, "hubble_search").execute(
+      "search-folder-reference",
+      { query: "STATUS", folder, limit: 10 },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(search)).toBe(
+      "incident response/open/timeline.md:1: Status: active\nincident response/summary.md:1: Status: active"
+    );
+    expect(search.details).toMatchObject({
+      folder,
+      query: "status",
+      matchCount: 2,
+      truncated: false,
+    });
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("registers working @hubble note lookups with Pi's autocomplete API", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-autocomplete-integration-"));
   const vault = join(workspace, "vault");
@@ -554,6 +647,19 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
     const all = await provider.getSuggestions(["@hubble/"], 0, 8, { signal });
     expect(all?.items.map((item) => item.label)).toEqual([
       "@hubble/alpha.md",
+      "@hubble/notes/",
+      "@hubble/notes/beta.md",
+      "@hubble/page.html",
+    ]);
+
+    await mkdir(join(vault, "new-folder"));
+    await writeFile(join(vault, "new-folder", "new-note.md"), "# New", "utf8");
+    const refreshed = await provider.getSuggestions(["@hubble/"], 0, 8, { signal, force: true });
+    expect(refreshed?.items.map((item) => item.label)).toEqual([
+      "@hubble/alpha.md",
+      "@hubble/new-folder/",
+      "@hubble/new-folder/new-note.md",
+      "@hubble/notes/",
       "@hubble/notes/beta.md",
       "@hubble/page.html",
     ]);

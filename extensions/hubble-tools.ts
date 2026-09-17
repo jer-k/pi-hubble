@@ -21,7 +21,7 @@ import { Value } from "typebox/value";
 import type { GetVault } from "./hubble-config.ts";
 import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
 import { buildNewNoteDocument } from "./hubble-notes.ts";
-import type { NoteSearchResult } from "./hubble-vault.ts";
+import type { NoteSearchResult, SearchPageOptions, VaultEntries } from "./hubble-vault.ts";
 
 /** Filesystem operations used to persist truncated output and injectable in failure-path tests. */
 export interface OutputFileSystem {
@@ -36,9 +36,16 @@ export interface TruncatedOutput {
   readonly fullOutputPath?: string;
 }
 
+const ListParameters = Type.Object({});
+
 /** Public parameter schema for Hubble note search. */
 export const SearchParameters = Type.Object({
   query: Type.String({ description: "Case-insensitive text to find in Hubble notes" }),
+  folder: Type.Optional(
+    Type.String({
+      description: "Optional vault-relative folder or @hubble/<folder>/ reference to search recursively",
+    })
+  ),
   offset: Type.Optional(
     Type.Integer({ minimum: 1, description: "1-based matching-line offset (default: 1); use nextOffset to continue" })
   ),
@@ -66,7 +73,9 @@ const CreateParameters = Type.Object({
         "Optional exact filename, including .md or .html, without a folder path. Its extension determines the format when format is omitted. Creation fails if it already exists.",
     })
   ),
-  folder: Type.Optional(Type.String({ description: "Optional vault-relative folder for the new note" })),
+  folder: Type.Optional(
+    Type.String({ description: "Optional vault-relative folder or @hubble/<folder>/ reference for the new note" })
+  ),
   format: Type.Optional(
     StringEnum(["markdown", "html"] as const, {
       description: "Note format; inferred from filename when provided, otherwise defaults to markdown",
@@ -218,16 +227,69 @@ function formatSearchResults(results: NoteSearchResult[]): FormattedSearchResult
   return { lines, count: lines.length };
 }
 
-/** Registers the Hubble search, read, create, and edit tools. */
+/** Formats discovered folders and notes as one stable, line-oriented listing. */
+function formatVaultEntries(entries: VaultEntries): string {
+  return [
+    ...entries.directories.map((directory) => `${directory.relative}/`),
+    ...entries.notes.map((note) => note.relative),
+  ]
+    .sort((left, right) => left.localeCompare(right))
+    .join("\n");
+}
+
+/** Registers the Hubble list, search, read, create, and edit tools. */
 export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
+  pi.registerTool({
+    name: "hubble_list",
+    label: "Hubble List",
+    description:
+      "List supported notes and existing directories in the configured Hubble vault. Directories end with a slash. Output is truncated to 50KB or 2000 lines.",
+    promptSnippet: "List notes and directories in the configured Hubble vault",
+    promptGuidelines: [
+      "Use hubble_list when you need to discover existing Hubble folders or note paths.",
+      "Hubble tool paths are relative to the configured vault; do not use absolute paths or paths outside the vault.",
+    ],
+    parameters: ListParameters,
+    /** Lists all supported notes and safe directories currently in the vault. */
+    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+      throwIfAborted(signal);
+
+      const vault = await getVault(ctx);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
+
+      const entries = unwrap(await vault.value.discover(signal));
+      const listing = formatVaultEntries(entries);
+
+      if (!listing) {
+        return noteResult("The Hubble vault has no notes or directories.", {
+          noteCount: 0,
+          directoryCount: 0,
+          truncated: false,
+        });
+      }
+
+      const output = unwrap(await truncateOutput(listing));
+      return noteResult(output.text, {
+        noteCount: entries.notes.length,
+        directoryCount: entries.directories.length,
+        truncated: output.truncated,
+        fullOutputPath: output.fullOutputPath,
+      });
+    },
+  });
+
   pi.registerTool({
     name: "hubble_search",
     label: "Hubble Search",
     description:
-      "Search Markdown and HTML notes in the configured Hubble vault. HTML is searched as raw source. Results are limited and truncated to 50KB or 2000 lines.",
+      "Search Markdown and HTML notes in the configured Hubble vault, optionally within a folder. Folder searches are recursive. HTML is searched as raw source. Results are limited and truncated to 50KB or 2000 lines.",
     promptSnippet: "Search notes in the configured Hubble vault",
     promptGuidelines: [
       "Use hubble_search before hubble_read when you need to discover a note or locate text in the vault.",
+      "Pass folder to restrict search recursively to a vault-relative folder or an @hubble/<folder>/ reference.",
       "Hubble tool paths are relative to the configured vault; do not use absolute paths or paths outside the vault.",
     ],
     parameters: SearchParameters,
@@ -242,15 +304,18 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       }
 
       const offset = params.offset ?? 1;
-      const searched = unwrap(
-        await vault.value.searchPage(params.query, { offset, limit: params.limit ?? 100 }, signal)
-      );
+      const page: SearchPageOptions =
+        params.folder === undefined
+          ? { offset, limit: params.limit ?? 100 }
+          : { folder: params.folder, offset, limit: params.limit ?? 100 };
+      const searched = unwrap(await vault.value.searchPage(params.query, page, signal));
       const formatted = formatSearchResults(searched.results);
 
       if (formatted.count === 0) {
         return noteResult(
           offset === 1 ? "No Hubble notes matched the query." : "No more Hubble matches at this offset.",
           {
+            folder: params.folder,
             query: params.query.trim().toLowerCase(),
             matchCount: 0,
           }
@@ -260,13 +325,15 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
 
       const nextOffset = searched.hasMore ? offset + formatted.count : undefined;
+      const continuationScope = params.folder === undefined ? "query" : "query and folder";
       const notice =
         nextOffset === undefined
           ? ""
-          : `\n\n[More matches available. Continue hubble_search with the same query and offset: ${nextOffset}.]`;
+          : `\n\n[More matches available. Continue hubble_search with the same ${continuationScope} and offset: ${nextOffset}.]`;
       return noteResult(output.text + notice, {
         nextOffset,
         hasMore: searched.hasMore,
+        folder: params.folder,
         query: params.query.trim().toLowerCase(),
         matchCount: formatted.count,
         truncated: output.truncated || searched.hasMore,
@@ -321,6 +388,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
     promptGuidelines: [
       "Use hubble_create instead of overwriting an existing note when the user asks for a new Hubble document.",
       "When the user specifies an exact filename for a new Hubble note, pass it to hubble_create as filename instead of creating and editing multiple notes.",
+      "When the user specifies an @hubble/<folder>/ destination, pass that reference directly to hubble_create as folder.",
     ],
     parameters: CreateParameters,
     /** Creates a new note in the requested format in the configured vault. */

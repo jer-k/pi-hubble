@@ -117,6 +117,10 @@ test("creates titled Markdown and HTML notes and handles an empty vault", async 
   expect(ctx.notifications[0]).toBe("Created Hubble note: work/new-note.md");
   expect(ctx.getEditorText()).toContain(`@${join(await realpath(root), "work", "new-note.md")}`);
 
+  const referenced = createContext();
+  await runCommand(command?.options, "new Referenced --folder=@hubble/work/", referenced.ctx);
+  expect(referenced.notifications[0]).toBe("Created Hubble note: work/referenced.md");
+
   const html = createContext();
   await runCommand(command?.options, "new HTML page --folder=work --format html", html.ctx);
   expect(html.notifications[0]).toBe("Created Hubble note: work/html-page.html");

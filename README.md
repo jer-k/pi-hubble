@@ -75,17 +75,22 @@ current working directory.
 
 The extension registers these Pi tools:
 
-- `hubble_search(query, limit?, offset?)` searches note contents case-insensitively and
-  returns matching lines. `limit` defaults to 100 and may be between 1 and 500.
-  Capped results include a continuation notice and `nextOffset`; pass that value
-  as the 1-based matching-line `offset` to retrieve the next page. Pages reflect
-  the current vault, so concurrent note changes can shift their offsets. Tool
-  searches stop after the page and one lookahead match, retaining only that page.
+- `hubble_list()` lists existing vault directories and supported notes. Directory
+  paths end with `/`.
+- `hubble_search(query, folder?, limit?, offset?)` searches note contents case-insensitively and
+  returns matching lines. `folder` recursively restricts results to a vault-relative
+  folder and accepts either a plain path or an `@hubble/<folder>/` reference. `limit`
+  defaults to 100 and may be between 1 and 500. Capped results include a continuation
+  notice and `nextOffset`; pass that value with the same query and folder as the
+  1-based matching-line `offset` to retrieve the next page. Pages reflect the current
+  vault, so concurrent note changes can shift their offsets. Tool searches stop after
+  the page and one lookahead match, retaining only that page.
 - `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
 - `hubble_create(title, content, filename?, folder?, format?)` creates a new
   note, optionally with an exact filename or in a vault-relative folder.
-  `format` is `markdown` (the default) or `html`.
+  `folder` accepts either a plain relative path or an `@hubble/<folder>/`
+  autocomplete reference. `format` is `markdown` (the default) or `html`.
 - `hubble_edit(path, edits)` applies one or more exact, unique,
   non-overlapping text replacements to Markdown or HTML. Every edit is matched
   against the original note rather than the result of an earlier replacement.
@@ -112,16 +117,25 @@ by writing and syncing a same-directory temporary file, closing it, and
 atomically renaming it over the original so a failed edit cannot truncate the
 note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
 are checked against path traversal and symlink escapes, and note discovery
-recursively scans the vault while skipping symlinks. Discovery revalidates the
-root, directories, and note paths so replacements after opening the vault are rejected.
+recursively scans the vault while skipping symlinks. Hubble's internal root
+`.hubble` metadata directory is reserved: discovery skips it and direct note
+operations reject it. Discovery revalidates the root, directories, and note
+paths so replacements after opening the vault are rejected. Creation also
+revalidates newly opened files before writing content, preventing a replaced
+parent directory from redirecting note contents outside the vault.
 
 ## Interactive discovery
 
-- `@hubble/` autocomplete for attaching a vault note to the prompt; discovery
-  is cached for up to one second and refreshed immediately after this extension
+- `@hubble/` autocomplete for referencing vault notes and directories. Note
+  selections become ordinary Pi file attachments; directory selections remain
+  `@hubble/<folder>/` references suitable for destination instructions. Folder
+  references containing whitespace are quoted and can be passed directly to
+  `hubble_create`. Empty directories are included. Discovery is cached for up
+  to one second, while explicit Tab completion always rescans so paths added elsewhere during the
+  session appear immediately. Discovery is also refreshed after this extension
   creates a note. Suggested paths are rechecked even when cached. After typing
-  a folder prefix, suggestions show only the remaining path so filename endings
-  and extensions remain visible
+  a folder prefix, suggestions show only the remaining path so endings remain
+  visible
 - `/hubble find <query>` to find note filenames explicitly
 - `/hubble search <query>` to search note contents
 - `/hubble new [title] [--format markdown|html] [--folder <folder>]` to create

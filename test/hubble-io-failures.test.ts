@@ -43,6 +43,7 @@ function handleOperations(handle: fs.FileHandle): NoteFileHandle {
   return {
     chmod: handle.chmod.bind(handle),
     close: handle.close.bind(handle),
+    stat: handle.stat.bind(handle),
     sync: handle.sync.bind(handle),
     writeFile: handle.writeFile.bind(handle),
   };
