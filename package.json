@@ -37,7 +37,7 @@
     "@oxlint/plugins": "^1.81.0",
     "@types/node": "^26.4.0",
     "oxfmt": "^0.68.0",
-    "oxlint": "^1.80.0",
+    "oxlint": "^1.83.0",
     "typebox": "^1.3.26",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
