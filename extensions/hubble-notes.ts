@@ -8,19 +8,25 @@ import { Result, type Result as ResultType } from "better-result";
 
 import {
   type CreateNoteResult,
+  type DeleteNoteError,
   type DiscoveryError,
+  type EditMismatchDiagnostic,
   type EditNoteError,
   EditValidationError,
   ExistingFileError,
   MissingFileError,
   mapFileSystemError,
+  type MoveNoteError,
   NoteConflictError,
+  NoteDeleteError,
+  NoteMoveError,
   NoteNotFoundError,
   NoteReadError,
   type NoteReadResult,
   NoteValidationError,
   NoteWriteError,
   VaultDiscoveryError,
+  type VaultPathError,
 } from "./hubble-errors.ts";
 import {
   assertNotePath,
@@ -46,6 +52,7 @@ export interface NoteFileHandle {
 /** Filesystem operations used by note storage and injectable in failure-path tests. */
 export interface NoteFileSystem {
   access(path: string, mode: number): Promise<void>;
+  link(existingPath: string, newPath: string): Promise<void>;
   mkdir(path: string, options: { readonly recursive: true }): Promise<string | undefined>;
   open(path: string, flags: "wx", mode?: number): Promise<NoteFileHandle>;
   readdir(path: string, options: { readonly withFileTypes: true }): Promise<Dirent[]>;
@@ -85,6 +92,66 @@ export function slugifyTitle(title: string): string {
   return slug || "note";
 }
 
+/** Makes otherwise invisible edit text inspectable while bounding error-message size. */
+function visibleWhitespace(text: string): string {
+  const maximumLength = 500;
+  const visible = text.replaceAll(" ", "·").replaceAll("\t", "→").replaceAll("\n", "↵\n");
+  return visible.length > maximumLength ? `${visible.slice(0, maximumLength)}…` : visible;
+}
+
+/** Finds a likely exact-edit region whose only differences are horizontal whitespace. */
+function whitespaceMismatch(content: string, requested: string): EditMismatchDiagnostic | undefined {
+  const withoutTrailingWhitespace = (text: string): string => text.replace(/[ \t]+(?=\n|$)/gu, "");
+  const withCollapsedWhitespace = (text: string): string =>
+    withoutTrailingWhitespace(text)
+      .split("\n")
+      .map((line) => line.replace(/[ \t]+/gu, " "))
+      .join("\n");
+  const candidates = [
+    { kind: "trailing-whitespace" as const, normalize: withoutTrailingWhitespace },
+    { kind: "horizontal-whitespace" as const, normalize: withCollapsedWhitespace },
+  ];
+
+  for (const candidate of candidates) {
+    const normalizedContent = candidate.normalize(content);
+    const normalizedRequested = candidate.normalize(requested);
+
+    if (!normalizedRequested || (normalizedRequested === requested && normalizedContent === content)) {
+      continue;
+    }
+
+    const index = normalizedContent.indexOf(normalizedRequested);
+
+    if (index === -1) {
+      continue;
+    }
+
+    const preceding = normalizedContent.slice(0, index);
+    const line = preceding.split("\n").length;
+    const lastNewline = preceding.lastIndexOf("\n");
+    const column = index - lastNewline;
+    const contentLines = content.split("\n");
+    const requestedLineCount = requested.split("\n").length;
+    const actual = contentLines.slice(line - 1, line - 1 + requestedLineCount).join("\n");
+
+    return {
+      kind: candidate.kind,
+      line,
+      column,
+      requested: visibleWhitespace(requested),
+      actual: visibleWhitespace(actual),
+    };
+  }
+
+  return undefined;
+}
+
+/** Formats a whitespace-only mismatch so tool callers can repair exact edit text. */
+function mismatchMessage(path: string, editIndex: number, mismatch: EditMismatchDiagnostic): string {
+  const difference = mismatch.kind === "trailing-whitespace" ? "trailing spaces or tabs" : "horizontal spaces or tabs";
+  return `Could not find an exact match for edits[${editIndex}].oldText in ${path}. A whitespace-equivalent region at line ${mismatch.line}, column ${mismatch.column} differs in ${difference}. Visible whitespace uses · for spaces, → for tabs, and ↵ for newlines.\nRequested: ${mismatch.requested}\nActual: ${mismatch.actual}`;
+}
+
 /** Validates and applies unique, non-overlapping exact-text replacements. */
 export function applyExactEdits(
   content: string,
@@ -107,8 +174,23 @@ export function applyExactEdits(
     const first = content.indexOf(edit.oldText);
 
     if (first === -1) {
+      const mismatch = whitespaceMismatch(content, edit.oldText);
+
       return Result.err(
-        new EditValidationError({ path, reason: "missing", message: "Could not find an exact edit match." })
+        mismatch
+          ? new EditValidationError({
+              path,
+              reason: "missing",
+              editIndex: index,
+              mismatch,
+              message: mismatchMessage(path, index, mismatch),
+            })
+          : new EditValidationError({
+              path,
+              reason: "missing",
+              editIndex: index,
+              message: `Could not find an exact match for edits[${index}].oldText in ${path}.`,
+            })
       );
     }
 
@@ -116,7 +198,12 @@ export function applyExactEdits(
 
     if (second !== -1) {
       return Result.err(
-        new EditValidationError({ path, reason: "duplicate", message: "An edit's oldText is not unique." })
+        new EditValidationError({
+          path,
+          reason: "duplicate",
+          editIndex: index,
+          message: `edits[${index}].oldText is not unique in ${path}.`,
+        })
       );
     }
 
@@ -610,10 +697,10 @@ export async function writeNewVaultFile(
   });
 }
 
-/** Raises cancellation only between filesystem operations so the mutation queue remains held while I/O settles. */
+/** Raises cancellation only between filesystem operations so a held mutation queue remains held while I/O settles. */
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
-    throw signal.reason ?? new DOMException("The Hubble edit was cancelled.", "AbortError");
+    throw signal.reason ?? new DOMException("The Hubble operation was cancelled.", "AbortError");
   }
 }
 
@@ -910,6 +997,288 @@ export async function editVaultFile(
   });
 }
 
+/** Acquires multiple Pi file queues in stable order to prevent move-to-move deadlocks. */
+function withFileMutationQueues<T>(paths: ReadonlyArray<string>, operation: () => Promise<T>): Promise<T> {
+  const ordered = [...new Set(paths)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+
+  const acquire = (index: number): Promise<T> => {
+    const path = ordered[index];
+    return path === undefined ? operation() : withFileMutationQueue(path, () => acquire(index + 1));
+  };
+
+  return acquire(0);
+}
+
+/** Re-resolves a queued mutation path and rejects replacements that changed its canonical target. */
+async function revalidateMutationPath(
+  vault: VaultRoot,
+  path: HubblePath
+): Promise<ResultType<void, VaultPathError | NoteConflictError>> {
+  const checked = await resolveVaultPath(vault, path.relative);
+
+  if (Result.isError(checked)) {
+    return checked;
+  }
+
+  if (checked.value.absolute !== path.absolute) {
+    return Result.err(
+      new NoteConflictError({
+        path: path.relative,
+        message:
+          "The Hubble note path changed before the mutation could be committed. Read the vault again before retrying.",
+      })
+    );
+  }
+
+  return Result.ok();
+}
+
+/** Removes a linked move destination after a failed or conflicted move. */
+async function rollBackMoveDestination(
+  source: HubblePath,
+  destination: HubblePath,
+  failure: NoteMoveError | NoteConflictError,
+  fileSystem: NoteFileSystem
+): Promise<NoteMoveError | NoteConflictError> {
+  const removed = await Result.tryPromise({
+    try: () => fileSystem.unlink(destination.absolute),
+    catch: (cause) => mapFileSystemError(destination.absolute, cause),
+  });
+
+  if (Result.isOk(removed) || MissingFileError.is(removed.error)) {
+    return failure;
+  }
+
+  return new NoteMoveError({
+    source: source.relative,
+    destination: destination.relative,
+    cause: new AggregateError(
+      [failure, removed.error],
+      "The Hubble move failed and its destination could not be removed."
+    ),
+    message: "Could not roll back a failed Hubble note move.",
+  });
+}
+
+/**
+ * Moves or renames a note without overwriting an existing destination.
+ * Missing destination folders are created safely. The operation holds the vault and
+ * both file queues, then uses an exclusive hard link followed by source removal.
+ * It returns structured path, read, conflict, or move failures.
+ */
+export async function moveVaultFile(
+  vault: VaultRoot,
+  source: HubblePath,
+  destination: HubblePath,
+  signal?: AbortSignal,
+  fileSystem: NoteFileSystem = nodeFileSystem
+): Promise<ResultType<void, MoveNoteError>> {
+  return withFileMutationQueues([vault.root, source.absolute, destination.absolute], async () => {
+    throwIfAborted(signal);
+
+    const safeSource = await revalidateMutationPath(vault, source);
+
+    if (Result.isError(safeSource)) {
+      return safeSource;
+    }
+
+    const sourceMetadata = await Result.tryPromise({
+      try: () => fileSystem.stat(source.absolute),
+      catch: (cause) => noteReadError(source, cause),
+    });
+
+    if (Result.isError(sourceMetadata)) {
+      return sourceMetadata;
+    }
+
+    if (!sourceMetadata.value.isFile()) {
+      return Result.err(
+        new NoteReadError({
+          path: source.relative,
+          cause: undefined,
+          message: "The requested Hubble path is not a file.",
+        })
+      );
+    }
+
+    throwIfAborted(signal);
+
+    const requestedDirectory = dirname(destination.relative);
+    const destinationDirectory = await resolveVaultDirectory(vault, requestedDirectory);
+
+    if (Result.isError(destinationDirectory)) {
+      return destinationDirectory;
+    }
+
+    const directoryCreated = await Result.tryPromise({
+      try: () => fileSystem.mkdir(destinationDirectory.value.absolute, { recursive: true }),
+      catch: (cause) =>
+        new NoteMoveError({
+          source: source.relative,
+          destination: destination.relative,
+          cause: mapFileSystemError(destinationDirectory.value.absolute, cause),
+          message: "Could not create the Hubble note move destination folder.",
+        }),
+    });
+
+    if (Result.isError(directoryCreated)) {
+      return directoryCreated;
+    }
+
+    const safeDirectory = await resolveVaultDirectory(vault, requestedDirectory);
+
+    if (Result.isError(safeDirectory)) {
+      return safeDirectory;
+    }
+
+    if (safeDirectory.value.absolute !== destinationDirectory.value.absolute) {
+      return Result.err(
+        new NoteConflictError({
+          path: destination.relative,
+          message: "The Hubble move destination folder changed before the note could be moved.",
+        })
+      );
+    }
+
+    const safeDestination = await revalidateMutationPath(vault, destination);
+
+    if (Result.isError(safeDestination)) {
+      return safeDestination;
+    }
+
+    throwIfAborted(signal);
+
+    const linked = await Result.tryPromise({
+      try: () => fileSystem.link(source.absolute, destination.absolute),
+      catch: (cause) => {
+        const filesystemError = mapFileSystemError(destination.absolute, cause);
+        return new NoteMoveError({
+          source: source.relative,
+          destination: destination.relative,
+          cause: filesystemError,
+          message: ExistingFileError.is(filesystemError)
+            ? "A Hubble note already exists at the move destination."
+            : "Could not create the Hubble note move destination.",
+        });
+      },
+    });
+
+    if (Result.isError(linked)) {
+      return linked;
+    }
+
+    const identities = await Result.tryPromise({
+      try: async () => ({
+        source: await fileSystem.stat(source.absolute),
+        destination: await fileSystem.stat(destination.absolute),
+      }),
+      catch: (cause) =>
+        new NoteMoveError({
+          source: source.relative,
+          destination: destination.relative,
+          cause: mapFileSystemError(source.absolute, cause),
+          message: "Could not verify the Hubble note move before removing its source.",
+        }),
+    });
+
+    if (Result.isError(identities)) {
+      return Result.err(await rollBackMoveDestination(source, destination, identities.error, fileSystem));
+    }
+
+    const before = sourceMetadata.value;
+    const currentSource = identities.value.source;
+    const currentDestination = identities.value.destination;
+
+    if (
+      before.dev !== currentSource.dev ||
+      before.ino !== currentSource.ino ||
+      currentSource.dev !== currentDestination.dev ||
+      currentSource.ino !== currentDestination.ino
+    ) {
+      const conflict = new NoteConflictError({
+        path: source.relative,
+        message: "The Hubble note changed while it was being moved. Read the vault again before retrying.",
+      });
+      return Result.err(await rollBackMoveDestination(source, destination, conflict, fileSystem));
+    }
+
+    const removed = await Result.tryPromise({
+      try: () => fileSystem.unlink(source.absolute),
+      catch: (cause) =>
+        new NoteMoveError({
+          source: source.relative,
+          destination: destination.relative,
+          cause: mapFileSystemError(source.absolute, cause),
+          message: "Could not remove the original Hubble note after linking its move destination.",
+        }),
+    });
+
+    if (Result.isError(removed)) {
+      return Result.err(await rollBackMoveDestination(source, destination, removed.error, fileSystem));
+    }
+
+    return Result.ok();
+  });
+}
+
+/**
+ * Deletes one safely resolved note while holding its Pi queue.
+ * Returns structured path, read, conflict, or delete failures.
+ */
+export async function deleteVaultFile(
+  vault: VaultRoot,
+  path: HubblePath,
+  signal?: AbortSignal,
+  fileSystem: NoteFileSystem = nodeFileSystem
+): Promise<ResultType<void, DeleteNoteError>> {
+  return withFileMutationQueue(path.absolute, async () => {
+    throwIfAborted(signal);
+
+    const safePath = await revalidateMutationPath(vault, path);
+
+    if (Result.isError(safePath)) {
+      return safePath;
+    }
+
+    const metadata = await Result.tryPromise({
+      try: () => fileSystem.stat(path.absolute),
+      catch: (cause) => noteReadError(path, cause),
+    });
+
+    if (Result.isError(metadata)) {
+      return metadata;
+    }
+
+    if (!metadata.value.isFile()) {
+      return Result.err(
+        new NoteReadError({
+          path: path.relative,
+          cause: undefined,
+          message: "The requested Hubble path is not a file.",
+        })
+      );
+    }
+
+    throwIfAborted(signal);
+
+    const rechecked = await revalidateMutationPath(vault, path);
+
+    if (Result.isError(rechecked)) {
+      return rechecked;
+    }
+
+    return Result.tryPromise({
+      try: () => fileSystem.unlink(path.absolute),
+      catch: (cause) =>
+        new NoteDeleteError({
+          path: path.relative,
+          cause: mapFileSystemError(path.absolute, cause),
+          message: "Could not delete the Hubble note.",
+        }),
+    });
+  });
+}
+
 /** Revalidates a directory before discovery, rejecting a root or child replaced by a symlink. */
 async function checkDiscoveryDirectory(directory: string): Promise<ResultType<void, VaultDiscoveryError>> {
   const checked = await canonicalVaultRoot(directory);
@@ -938,11 +1307,12 @@ async function checkDiscoveryDirectory(directory: string): Promise<ResultType<vo
   return Result.ok();
 }
 
-/** Recursively discovers supported Hubble notes and directories while ignoring symlinks. */
+/** Recursively discovers supported Hubble notes and directories within an optional resolved scope. */
 export async function discoverVaultEntries(
   vault: VaultRoot,
   fileSystem: NoteFileSystem = nodeFileSystem,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  scope?: HubblePath
 ): Promise<ResultType<VaultEntries, DiscoveryError>> {
   throwIfAborted(signal);
 
@@ -1035,38 +1405,52 @@ export async function discoverVaultEntries(
     return Result.ok();
   }
 
-  const checkedRoot = await checkDiscoveryDirectory(vault.root);
+  const discoveryRoot = scope?.absolute ?? vault.root;
+  const checkedRoot = await checkDiscoveryDirectory(discoveryRoot);
 
   if (Result.isError(checkedRoot)) {
     return checkedRoot;
   }
 
   const rootStat = await Result.tryPromise({
-    try: () => fileSystem.stat(vault.root),
+    try: () => fileSystem.stat(discoveryRoot),
     catch: (cause) =>
       new VaultDiscoveryError({
-        path: vault.root,
+        path: discoveryRoot,
         reason: "scan",
-        cause: mapFileSystemError(vault.root, cause),
-        message: "Could not inspect the configured Hubble vault.",
+        cause: mapFileSystemError(discoveryRoot, cause),
+        message: "Could not inspect the requested Hubble discovery scope.",
       }),
   });
 
   if (Result.isError(rootStat)) {
-    return MissingFileError.is(rootStat.error.cause) ? Result.ok({ notes, directories }) : rootStat;
+    if (!MissingFileError.is(rootStat.error.cause)) {
+      return rootStat;
+    }
+
+    return scope === undefined
+      ? Result.ok({ notes, directories })
+      : Result.err(
+          new VaultDiscoveryError({
+            path: discoveryRoot,
+            reason: "scan",
+            cause: rootStat.error.cause,
+            message: "The requested Hubble folder does not exist.",
+          })
+        );
   }
 
   if (!rootStat.value.isDirectory()) {
     return Result.err(
       new VaultDiscoveryError({
-        path: vault.root,
+        path: discoveryRoot,
         reason: "not-directory",
-        message: "The configured Hubble vault is not a directory.",
+        message: "The requested Hubble discovery scope is not a directory.",
       })
     );
   }
 
-  const visited = await visit(vault.root);
+  const visited = await visit(discoveryRoot);
 
   if (Result.isError(visited)) {
     return visited;

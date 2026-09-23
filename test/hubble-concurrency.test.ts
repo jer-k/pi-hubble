@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { expect, test } from "vitest";
@@ -157,6 +157,88 @@ test("does not write note content when a replaced folder is restored after open"
     const result = await opened.value.create("Raced", "private body", "folder");
     expect(result).toMatchObject({ status: "error", error: { _tag: "NoteWriteError" } });
     expect(await fs.readFile(join(outside, "raced.md"), "utf8")).toBe("");
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("does not move a note through a destination folder replaced by an external symlink", async () => {
+  const base = await fs.mkdtemp(join(tmpdir(), "hubble-move-folder-race-"));
+  const root = join(base, "vault");
+  const outside = join(base, "outside");
+  await fs.mkdir(root);
+  await fs.mkdir(outside);
+  await fs.writeFile(join(root, "note.md"), "private");
+  let replaced = false;
+
+  try {
+    const opened = await Vault.open(root, {
+      ...fs,
+      async mkdir(path, options) {
+        const created = await fs.mkdir(path, options);
+
+        if (!replaced && path.endsWith("/archive")) {
+          replaced = true;
+          await fs.rename(path, join(dirname(path), "original-archive"));
+          await fs.symlink(outside, path);
+        }
+
+        return created;
+      },
+    });
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
+    expect(await opened.value.move("note.md", "archive/note.md")).toMatchObject({
+      status: "error",
+      error: { _tag: "VaultPathError", reason: "symlink-escape" },
+    });
+    expect(await fs.readFile(join(root, "note.md"), "utf8")).toBe("private");
+    expect(await fs.readdir(outside)).toEqual([]);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("does not delete through a source folder replaced by an external symlink", async () => {
+  const base = await fs.mkdtemp(join(tmpdir(), "hubble-delete-folder-race-"));
+  const root = join(base, "vault");
+  const outside = join(base, "outside");
+  await fs.mkdir(join(root, "folder"), { recursive: true });
+  await fs.mkdir(outside);
+  await fs.writeFile(join(root, "folder", "note.md"), "safe");
+  await fs.writeFile(join(outside, "note.md"), "private");
+  let replaced = false;
+
+  try {
+    const opened = await Vault.open(root, {
+      ...fs,
+      async stat(path) {
+        const metadata = await fs.stat(path);
+
+        if (!replaced && path.endsWith("/folder/note.md")) {
+          replaced = true;
+          const folder = dirname(path);
+          await fs.rename(folder, join(dirname(folder), "original-folder"));
+          await fs.symlink(outside, folder);
+        }
+
+        return metadata;
+      },
+    });
+
+    if (opened.status === "error") {
+      throw opened.error;
+    }
+
+    expect(await opened.value.delete("folder/note.md")).toMatchObject({
+      status: "error",
+      error: { _tag: "VaultPathError", reason: "symlink-escape" },
+    });
+    expect(await fs.readFile(join(outside, "note.md"), "utf8")).toBe("private");
+    expect(await fs.readFile(join(root, "original-folder", "note.md"), "utf8")).toBe("safe");
   } finally {
     await fs.rm(base, { recursive: true, force: true });
   }

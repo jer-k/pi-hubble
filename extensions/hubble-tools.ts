@@ -36,7 +36,13 @@ export interface TruncatedOutput {
   readonly fullOutputPath?: string;
 }
 
-const ListParameters = Type.Object({});
+const ListParameters = Type.Object({
+  folder: Type.Optional(
+    Type.String({
+      description: "Optional vault-relative folder or @hubble/<folder>/ reference to list recursively",
+    })
+  ),
+});
 
 /** Public parameter schema for Hubble note search. */
 export const SearchParameters = Type.Object({
@@ -81,6 +87,18 @@ const CreateParameters = Type.Object({
       description: "Note format; inferred from filename when provided, otherwise defaults to markdown",
     })
   ),
+});
+
+const MoveParameters = Type.Object({
+  path: Type.String({ description: "Existing supported note path relative to the Hubble vault" }),
+  destination: Type.String({
+    description:
+      "New vault-relative note path, including its .md or .html filename; existing files are not overwritten",
+  }),
+});
+
+const DeleteParameters = Type.Object({
+  path: Type.String({ description: "Existing supported note path relative to the Hubble vault" }),
 });
 
 const EditParameters = Type.Object({
@@ -237,21 +255,22 @@ function formatVaultEntries(entries: VaultEntries): string {
     .join("\n");
 }
 
-/** Registers the Hubble list, search, read, create, and edit tools. */
+/** Registers Hubble discovery, reading, creation, editing, move, and deletion tools. */
 export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
   pi.registerTool({
     name: "hubble_list",
     label: "Hubble List",
     description:
-      "List supported notes and existing directories in the configured Hubble vault. Directories end with a slash. Output is truncated to 50KB or 2000 lines.",
-    promptSnippet: "List notes and directories in the configured Hubble vault",
+      "List supported notes and existing directories in the configured Hubble vault, optionally within a folder. Folder listings are recursive. Directories end with a slash. Output is truncated to 50KB or 2000 lines.",
+    promptSnippet: "List notes and directories in the configured Hubble vault, optionally within a folder",
     promptGuidelines: [
       "Use hubble_list when you need to discover existing Hubble folders or note paths.",
+      "Pass folder to restrict a large listing recursively to a vault-relative folder or an @hubble/<folder>/ reference.",
       "Hubble tool paths are relative to the configured vault; do not use absolute paths or paths outside the vault.",
     ],
     parameters: ListParameters,
     /** Lists all supported notes and safe directories currently in the vault. */
-    async execute(_toolCallId, _params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       throwIfAborted(signal);
 
       const vault = await getVault(ctx);
@@ -260,19 +279,30 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
         throwHubbleError(vault.error);
       }
 
-      const entries = unwrap(await vault.value.discover(signal));
+      const discovered =
+        params.folder === undefined
+          ? await vault.value.discover(signal)
+          : await vault.value.discoverInFolder(params.folder, signal);
+      const entries = unwrap(discovered);
       const listing = formatVaultEntries(entries);
 
       if (!listing) {
-        return noteResult("The Hubble vault has no notes or directories.", {
-          noteCount: 0,
-          directoryCount: 0,
-          truncated: false,
-        });
+        return noteResult(
+          params.folder === undefined
+            ? "The Hubble vault has no notes or directories."
+            : "The requested Hubble folder has no notes or subdirectories.",
+          {
+            folder: params.folder,
+            noteCount: 0,
+            directoryCount: 0,
+            truncated: false,
+          }
+        );
       }
 
       const output = unwrap(await truncateOutput(listing));
       return noteResult(output.text, {
+        folder: params.folder,
         noteCount: entries.notes.length,
         directoryCount: entries.directories.length,
         truncated: output.truncated,
@@ -466,16 +496,72 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
   });
 
   pi.registerTool({
+    name: "hubble_move",
+    label: "Hubble Move",
+    description:
+      "Move or rename one Markdown or HTML note to a new vault-relative path without overwriting an existing file. The destination includes the filename, creates missing parent folders, and must preserve the note format.",
+    promptSnippet: "Move or rename a Hubble note without overwriting",
+    promptGuidelines: [
+      "Use hubble_move to reorganize or rename an existing Hubble note.",
+      "Pass a complete destination path ending in the same supported note format as the source; missing destination folders are created.",
+      "hubble_move never overwrites an existing destination.",
+    ],
+    parameters: MoveParameters,
+    /** Moves a note to a distinct, unoccupied path. */
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      throwIfAborted(signal);
+
+      const vault = await getVault(ctx);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
+
+      const moved = unwrap(await vault.value.move(params.path, params.destination, signal));
+      return noteResult(`Moved Hubble note: ${params.path} → ${moved.relative}`, {
+        source: params.path,
+        path: moved.relative,
+      });
+    },
+  });
+
+  pi.registerTool({
+    name: "hubble_delete",
+    label: "Hubble Delete",
+    description: "Permanently delete one Markdown or HTML note from the configured Hubble vault.",
+    promptSnippet: "Permanently delete a Hubble note",
+    promptGuidelines: [
+      "Use hubble_delete only when the user has asked to remove a note.",
+      "The deletion is permanent and only supports vault-relative Markdown or HTML note paths.",
+    ],
+    parameters: DeleteParameters,
+    /** Permanently deletes one validated note. */
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      throwIfAborted(signal);
+
+      const vault = await getVault(ctx);
+
+      if (Result.isError(vault)) {
+        throwHubbleError(vault.error);
+      }
+
+      const deleted = unwrap(await vault.value.delete(params.path, signal));
+      return noteResult(`Deleted Hubble note: ${deleted.relative}`, { path: deleted.relative });
+    },
+  });
+
+  pi.registerTool({
     name: "hubble_edit",
     label: "Hubble Edit",
     description:
-      "Edit one Markdown or HTML note using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original note. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+      "Edit one Markdown or HTML note using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original note. Whitespace-only mismatches include visible line and column diagnostics. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
     promptSnippet: "Make precise Hubble note edits with exact text replacement, including multiple disjoint edits",
     promptGuidelines: [
       "Use hubble_edit for precise Hubble note changes; edits[].oldText must match exactly.",
       "When changing multiple separate locations in one Hubble note, use one hubble_edit call with multiple entries in edits[] instead of multiple calls.",
       "Each hubble_edit edits[].oldText is matched against the original note, not after earlier edits are applied. Do not emit overlapping or nested edits; merge nearby changes into one edit.",
       "Keep hubble_edit edits[].oldText as small as possible while still being unique in the note. Do not pad with large unchanged regions.",
+      "When an exact match fails, use any visible whitespace and line/column diagnostics in the error before rereading the note.",
     ],
     parameters: EditParameters,
     prepareArguments: prepareHubbleEditArguments,

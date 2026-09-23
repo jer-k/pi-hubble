@@ -73,8 +73,8 @@ export class VaultPathError extends TaggedError("VaultPathError")<{
 }> {}
 
 /** Stable classifications for invalid note input. */
-export type NoteValidationReason = "title" | "query" | "filename" | "format" | "pagination";
-/** Note input could not be parsed into a valid creation or search request. */
+export type NoteValidationReason = "title" | "query" | "filename" | "format" | "pagination" | "destination";
+/** Note input could not be parsed into a valid creation, search, pagination, or move request. */
 export class NoteValidationError extends TaggedError("NoteValidationError")<{
   readonly reason: NoteValidationReason;
   readonly path?: string;
@@ -111,11 +111,35 @@ export class NoteReadError extends TaggedError("NoteReadError")<{
   readonly message: string;
 }> {}
 
-/** A note changed outside Pi while its replacement was being prepared; reread before retrying. */
+/** A note move failed while linking its new path or removing its old path. */
+export class NoteMoveError extends TaggedError("NoteMoveError")<{
+  readonly source: string;
+  readonly destination: string;
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
+
+/** A note deletion failed after its path was safely resolved. */
+export class NoteDeleteError extends TaggedError("NoteDeleteError")<{
+  readonly path: string;
+  readonly cause: unknown;
+  readonly message: string;
+}> {}
+
+/** A note changed outside Pi while a mutation was being prepared; reread before retrying. */
 export class NoteConflictError extends TaggedError("NoteConflictError")<{
   readonly path: string;
   readonly message: string;
 }> {}
+
+/** Visible context for an exact-edit failure caused only by horizontal whitespace. */
+export interface EditMismatchDiagnostic {
+  readonly kind: "trailing-whitespace" | "horizontal-whitespace";
+  readonly line: number;
+  readonly column: number;
+  readonly requested: string;
+  readonly actual: string;
+}
 
 /** Stable classifications for invalid exact-text edit sets. */
 export type EditValidationReason = "empty" | "missing" | "duplicate" | "overlap" | "no-op";
@@ -123,6 +147,8 @@ export type EditValidationReason = "empty" | "missing" | "duplicate" | "overlap"
 export class EditValidationError extends TaggedError("EditValidationError")<{
   readonly path: string;
   readonly reason: EditValidationReason;
+  readonly editIndex?: number;
+  readonly mismatch?: EditMismatchDiagnostic;
   readonly message: string;
 }> {}
 /** Stable classifications for vault discovery failures. */
@@ -159,6 +185,16 @@ export type EditNoteError =
   | NoteReadError
   | NoteWriteError
   | NoteConflictError;
+/** Expected validation, path, conflict, and storage failures from moving a note. */
+export type MoveNoteError =
+  | VaultPathError
+  | NoteValidationError
+  | NoteNotFoundError
+  | NoteReadError
+  | NoteMoveError
+  | NoteConflictError;
+/** Expected path, read, conflict, and storage failures from deleting a note. */
+export type DeleteNoteError = VaultPathError | NoteNotFoundError | NoteReadError | NoteDeleteError | NoteConflictError;
 /** Expected failure while discovering notes in a vault. */
 export type DiscoveryError = VaultDiscoveryError;
 /** Expected path and read failures from a high-level note operation. */

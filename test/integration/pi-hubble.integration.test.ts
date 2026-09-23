@@ -386,6 +386,8 @@ test("makes every Hubble tool available through the Pi SDK runtime", async () =>
       "hubble_search",
       "hubble_read",
       "hubble_create",
+      "hubble_move",
+      "hubble_delete",
       "hubble_edit",
     ]);
   } finally {
@@ -471,6 +473,40 @@ test("creates a Hubble note in an autocomplete folder reference through the Pi S
     expect(await readFile(join(vault, "incident response", "incident-timeline.md"), "utf8")).toBe(
       "# Incident Timeline\n\nFirst event"
     );
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("moves and deletes a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-move-delete-integration-"));
+  const vault = join(workspace, "vault");
+  const sourcePath = join(vault, "inbox", "source.md");
+  await mkdir(dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, "# Source\n\nBody", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const moved = await getTool(session, "hubble_move").execute(
+      "move",
+      { path: "inbox/source.md", destination: "archive/renamed.md" },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(moved)).toBe("Moved Hubble note: inbox/source.md → archive/renamed.md");
+    expect(await readFile(join(vault, "archive", "renamed.md"), "utf8")).toBe("# Source\n\nBody");
+
+    const deleted = await getTool(session, "hubble_delete").execute(
+      "delete",
+      { path: "archive/renamed.md" },
+      undefined,
+      undefined
+    );
+    expect(toolText(deleted)).toBe("Deleted Hubble note: archive/renamed.md");
+    await expect(readFile(join(vault, "archive", "renamed.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });

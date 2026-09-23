@@ -172,6 +172,66 @@ test.each(["writeFile", "chmod", "sync", "close", "rename"] as const)(
   }
 );
 
+test("preserves the source when creating a move destination fails", async () => {
+  const cause = systemError("link denied", "EACCES");
+  await using f = await fixture({
+    ...fs,
+    async link() {
+      throw cause;
+    },
+  });
+  await fs.writeFile(join(f.root, "note.md"), "old");
+
+  expect(await f.vault.move("note.md", "archive/note.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteMoveError", cause },
+  });
+  expect(await fs.readFile(join(f.root, "note.md"), "utf8")).toBe("old");
+  await expect(fs.readFile(join(f.root, "archive", "note.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("rolls back a linked move destination when source removal fails", async () => {
+  const cause = systemError("unlink denied", "EACCES");
+  let unlinkCalls = 0;
+  await using f = await fixture({
+    ...fs,
+    async unlink(path) {
+      unlinkCalls++;
+
+      if (unlinkCalls === 1) {
+        throw cause;
+      }
+
+      await fs.unlink(path);
+    },
+  });
+  await fs.writeFile(join(f.root, "note.md"), "old");
+
+  expect(await f.vault.move("note.md", "archive/note.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteMoveError", cause },
+  });
+  expect(await fs.readFile(join(f.root, "note.md"), "utf8")).toBe("old");
+  await expect(fs.readFile(join(f.root, "archive", "note.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("returns a structured delete failure without removing the note", async () => {
+  const cause = systemError("unlink denied", "EACCES");
+  await using f = await fixture({
+    ...fs,
+    async unlink() {
+      throw cause;
+    },
+  });
+  await fs.writeFile(join(f.root, "note.md"), "old");
+
+  expect(await f.vault.delete("note.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteDeleteError", cause },
+  });
+  expect(await fs.readFile(join(f.root, "note.md"), "utf8")).toBe("old");
+});
+
 test("cancels an atomic edit before rename and removes its temporary file", async () => {
   const controller = new AbortController();
   await using f = await fixture(
