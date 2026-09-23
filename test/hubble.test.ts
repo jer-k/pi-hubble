@@ -156,6 +156,74 @@ test("supports structured search and serialized exact mutations", async () => {
   expect(invalid.status).toBe("error");
 });
 
+test("moves, renames, and deletes notes without overwriting", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-move-delete-"));
+  const vault = await vaultAt(root);
+  const created = await vault.create("Source", "body");
+
+  if (created.status === "error") {
+    throw new Error("create failed");
+  }
+
+  const versionAfterCreate = vault.discoveryVersion;
+  const moved = await vault.move("source.md", "archive/renamed.md");
+  expect(moved).toMatchObject({ status: "ok", value: { relative: "archive/renamed.md" } });
+  expect(vault.discoveryVersion).toBe(versionAfterCreate + 1);
+  expect(await readFile(join(root, "archive", "renamed.md"), "utf8")).toBe("# Source\n\nbody");
+  await expect(readFile(join(root, "source.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+  const occupied = await vault.create("Occupied", "existing", "archive");
+
+  if (occupied.status === "error") {
+    throw new Error("create failed");
+  }
+
+  const collision = await vault.move("archive/renamed.md", occupied.value.relative);
+  expect(collision).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteMoveError", cause: { _tag: "ExistingFileError" } },
+  });
+  expect(await readFile(join(root, "archive", "renamed.md"), "utf8")).toContain("# Source");
+  expect(await readFile(occupied.value.absolute, "utf8")).toContain("# Occupied");
+
+  const formatChange = await vault.move("archive/renamed.md", "archive/renamed.html");
+  expect(formatChange).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteValidationError", reason: "format" },
+  });
+
+  const deleted = await vault.delete("archive/renamed.md");
+  expect(deleted).toMatchObject({ status: "ok", value: { relative: "archive/renamed.md" } });
+  expect(vault.discoveryVersion).toBe(versionAfterCreate + 3);
+  await expect(readFile(join(root, "archive", "renamed.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await vault.delete("archive/renamed.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "NoteNotFoundError" },
+  });
+});
+
+test("rejects unsafe move and delete paths", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "pi-hubble-mutation-safety-"));
+  const root = join(parent, "vault");
+  const outside = join(parent, "outside.md");
+  await mkdir(root);
+  await writeFile(join(root, "safe.md"), "safe", "utf8");
+  await writeFile(outside, "outside", "utf8");
+  await symlink(outside, join(root, "escape.md"));
+  const vault = await vaultAt(root);
+
+  expect(await vault.move("safe.md", "../outside.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "VaultPathError", reason: "escape" },
+  });
+  expect(await vault.delete("escape.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "VaultPathError", reason: "symlink-escape" },
+  });
+  expect(await readFile(outside, "utf8")).toBe("outside");
+  expect(await readFile(join(root, "safe.md"), "utf8")).toBe("safe");
+});
+
 test("uses exact optional filenames independently from titles and rejects unsafe or conflicting names", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-exact-filename-"));
   const vault = await vaultAt(root);
@@ -285,6 +353,14 @@ test("discovers, reads, searches, and edits Markdown and HTML notes", async () =
   expect(metadataRead).toMatchObject({ status: "error", error: { _tag: "VaultPathError", reason: "reserved" } });
   const metadataEdit = await vault.edit(".hubble/deleting/deleted.md", [{ oldText: "deleted", newText: "changed" }]);
   expect(metadataEdit).toMatchObject({ status: "error", error: { _tag: "VaultPathError", reason: "reserved" } });
+  expect(await vault.move("alpha.md", ".hubble/deleting/moved.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "VaultPathError", reason: "reserved" },
+  });
+  expect(await vault.delete(".hubble/deleting/deleted.md")).toMatchObject({
+    status: "error",
+    error: { _tag: "VaultPathError", reason: "reserved" },
+  });
 
   const discovered = await vault.discover();
   expect(discovered.status).toBe("ok");

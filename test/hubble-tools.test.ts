@@ -15,12 +15,21 @@ type ToolResult = { content: Array<{ type?: "text"; text: string }>; details: ob
 
 type RegisteredTestTool = Pick<ToolDefinition, "execute" | "prepareArguments" | "renderCall" | "renderResult">;
 
-type HubbleToolName = "hubble_list" | "hubble_search" | "hubble_read" | "hubble_create" | "hubble_edit";
+type HubbleToolName =
+  | "hubble_list"
+  | "hubble_search"
+  | "hubble_read"
+  | "hubble_create"
+  | "hubble_move"
+  | "hubble_delete"
+  | "hubble_edit";
 interface RegisteredHubbleTools {
   readonly hubble_list: RegisteredTestTool;
   readonly hubble_search: RegisteredTestTool;
   readonly hubble_read: RegisteredTestTool;
   readonly hubble_create: RegisteredTestTool;
+  readonly hubble_move: RegisteredTestTool;
+  readonly hubble_delete: RegisteredTestTool;
   readonly hubble_edit: RegisteredTestTool;
 }
 
@@ -66,6 +75,8 @@ function register(getVault: GetVault): RegisteredHubbleTools {
     hubble_search: registeredTool("hubble_search"),
     hubble_read: registeredTool("hubble_read"),
     hubble_create: registeredTool("hubble_create"),
+    hubble_move: registeredTool("hubble_move"),
+    hubble_delete: registeredTool("hubble_delete"),
     hubble_edit: registeredTool("hubble_edit"),
   };
 }
@@ -90,7 +101,15 @@ function plainRender(component: RenderComponent): string {
 test("executes list, create, read, edit, and search tools", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-"));
   const tools = register(async () => openVault(root));
-  expect(Object.keys(tools)).toEqual(["hubble_list", "hubble_search", "hubble_read", "hubble_create", "hubble_edit"]);
+  expect(Object.keys(tools)).toEqual([
+    "hubble_list",
+    "hubble_search",
+    "hubble_read",
+    "hubble_create",
+    "hubble_move",
+    "hubble_delete",
+    "hubble_edit",
+  ]);
 
   const created = await tools.hubble_create.execute(
     "create",
@@ -106,6 +125,7 @@ test("executes list, create, read, edit, and search tools", async () => {
   const listed = await tools.hubble_list.execute("list", {}, undefined, undefined, context);
   expect(firstText(listed)).toBe("first-note.md");
   expect(listed.details).toEqual({
+    folder: undefined,
     noteCount: 1,
     directoryCount: 0,
     truncated: false,
@@ -147,6 +167,89 @@ test("executes list, create, read, edit, and search tools", async () => {
   );
   expect(firstText(search)).toContain("first-note.md:3: Updated");
   expect(search.details).toMatchObject({ query: "updated", matchCount: 1, truncated: false });
+});
+
+test("lists a recursive folder scope without scanning unrelated entries into the result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-list-folder-"));
+  const vault = await openVault(root);
+
+  if (vault.status === "error") {
+    throw vault.error;
+  }
+
+  await vault.value.create("Direct", "body", "projects");
+  await vault.value.create("Nested", "body", "projects/archive");
+  await vault.value.create("Outside", "body", "other");
+  const tools = register(async () => vault);
+  const folder = "@hubble/projects/";
+  const listed = await tools.hubble_list.execute("list-folder", { folder }, undefined, undefined, context);
+
+  expect(firstText(listed)).toBe("projects/archive/\nprojects/archive/nested.md\nprojects/direct.md");
+  expect(listed.details).toEqual({
+    folder,
+    noteCount: 2,
+    directoryCount: 1,
+    truncated: false,
+    fullOutputPath: undefined,
+  });
+});
+
+test("moves and permanently deletes notes through tools", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-move-delete-"));
+  const vault = await openVault(root);
+
+  if (vault.status === "error") {
+    throw vault.error;
+  }
+
+  await vault.value.create("Source", "body", "inbox");
+  await vault.value.create("Archive Placeholder", "body", "archive");
+  const tools = register(async () => vault);
+  const moved = await tools.hubble_move.execute(
+    "move",
+    { path: "inbox/source.md", destination: "archive/source-renamed.md" },
+    undefined,
+    undefined,
+    context
+  );
+
+  expect(firstText(moved)).toBe("Moved Hubble note: inbox/source.md → archive/source-renamed.md");
+  expect(moved.details).toEqual({ source: "inbox/source.md", path: "archive/source-renamed.md" });
+  expect(await readFile(join(root, "archive", "source-renamed.md"), "utf8")).toContain("# Source");
+
+  const deleted = await tools.hubble_delete.execute(
+    "delete",
+    { path: "archive/source-renamed.md" },
+    undefined,
+    undefined,
+    context
+  );
+  expect(firstText(deleted)).toBe("Deleted Hubble note: archive/source-renamed.md");
+  await expect(readFile(join(root, "archive", "source-renamed.md"), "utf8")).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+test("returns whitespace diagnostics from exact-edit tool failures", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pi-hubble-tools-edit-diagnostic-"));
+  const vault = await openVault(root);
+
+  if (vault.status === "error") {
+    throw vault.error;
+  }
+
+  await vault.value.create("Tasks", "Alpha  \nBeta");
+  const tools = register(async () => vault);
+
+  await expect(
+    tools.hubble_edit.execute(
+      "edit",
+      { path: "tasks.md", edits: [{ oldText: "Alpha\nBeta", newText: "Done" }] },
+      undefined,
+      undefined,
+      context
+    )
+  ).rejects.toThrow(/line 3, column 1.*Visible whitespace uses · for spaces/su);
 });
 
 test("passes autocomplete folder references directly to hubble_create", async () => {
@@ -369,6 +472,12 @@ test("reports validation failures and honors cancellation", async () => {
       context
     )
   ).rejects.toThrow("escapes the vault");
+  await expect(
+    tools.hubble_list.execute("list-folder", { folder: "../outside" }, undefined, undefined, context)
+  ).rejects.toThrow("escapes the vault");
+  await expect(
+    tools.hubble_list.execute("list-missing-folder", { folder: "missing" }, undefined, undefined, context)
+  ).rejects.toThrow("The requested Hubble folder does not exist.");
 
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));

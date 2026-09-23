@@ -386,6 +386,8 @@ test("makes every Hubble tool available through the Pi SDK runtime", async () =>
       "hubble_search",
       "hubble_read",
       "hubble_create",
+      "hubble_move",
+      "hubble_delete",
       "hubble_edit",
     ]);
   } finally {
@@ -448,6 +450,40 @@ test("lists Hubble notes and directories through the Pi SDK runtime", async () =
   }
 });
 
+test("lists a recursive Hubble folder through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-list-folder-integration-"));
+  const vault = join(workspace, "vault");
+  await mkdir(join(vault, "incident response", "open"), { recursive: true });
+  await writeFile(join(vault, "incident response", "summary.md"), "# Summary", "utf8");
+  await writeFile(join(vault, "incident response", "open", "timeline.md"), "# Timeline", "utf8");
+  await writeFile(join(vault, "outside.md"), "# Outside", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const folder = '"@hubble/incident response/"';
+    const listed = await getTool(session, "hubble_list").execute(
+      "list-folder-reference",
+      { folder },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(listed)).toBe(
+      "incident response/open/\nincident response/open/timeline.md\nincident response/summary.md"
+    );
+    expect(listed.details).toMatchObject({
+      folder,
+      noteCount: 2,
+      directoryCount: 1,
+      truncated: false,
+    });
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("creates a Hubble note in an autocomplete folder reference through the Pi SDK runtime", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-create-folder-integration-"));
   const vault = join(workspace, "vault");
@@ -471,6 +507,59 @@ test("creates a Hubble note in an autocomplete folder reference through the Pi S
     expect(await readFile(join(vault, "incident response", "incident-timeline.md"), "utf8")).toBe(
       "# Incident Timeline\n\nFirst event"
     );
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("moves a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-move-integration-"));
+  const vault = join(workspace, "vault");
+  const sourcePath = join(vault, "inbox", "source.md");
+  await mkdir(dirname(sourcePath), { recursive: true });
+  await writeFile(sourcePath, "# Source\n\nBody", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const moved = await getTool(session, "hubble_move").execute(
+      "move",
+      { path: "inbox/source.md", destination: "archive/renamed.md" },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(moved)).toBe("Moved Hubble note: inbox/source.md → archive/renamed.md");
+    expect(moved.details).toEqual({ source: "inbox/source.md", path: "archive/renamed.md" });
+    expect(await readFile(join(vault, "archive", "renamed.md"), "utf8")).toBe("# Source\n\nBody");
+    await expect(readFile(sourcePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    session.dispose();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("deletes a Hubble note through the Pi SDK runtime", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "pi-hubble-sdk-delete-integration-"));
+  const vault = join(workspace, "vault");
+  const notePath = join(vault, "archive", "obsolete.md");
+  await mkdir(dirname(notePath), { recursive: true });
+  await writeFile(notePath, "# Obsolete\n\nRemove me", "utf8");
+  const session = await createIntegrationSession(workspace, vault);
+
+  try {
+    await session.bindExtensions({ mode: "print" });
+    const deleted = await getTool(session, "hubble_delete").execute(
+      "delete",
+      { path: "archive/obsolete.md" },
+      undefined,
+      undefined
+    );
+
+    expect(toolText(deleted)).toBe("Deleted Hubble note: archive/obsolete.md");
+    expect(deleted.details).toEqual({ path: "archive/obsolete.md" });
+    await expect(readFile(notePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });

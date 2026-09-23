@@ -2,17 +2,22 @@ import { Result, type Result as ResultType } from "better-result";
 
 import {
   type CreateNoteError,
+  type DeleteNoteError,
   type DiscoveryError,
   type EditNoteError,
+  type MoveNoteError,
   NoteValidationError,
   type VaultNoteError,
+  type VaultPathError,
   type VaultOpenErrorType,
 } from "./hubble-errors.ts";
 import {
+  deleteVaultFile,
   discoverVaultEntries,
   editVaultFile,
   type HubbleEdit,
   listNoteFiles,
+  moveVaultFile,
   type NoteFileSystem,
   type NoteReference,
   type VaultEntries,
@@ -23,6 +28,7 @@ import {
   assertNotePath,
   canonicalVaultRoot,
   type HubbleNoteFormat,
+  noteFormat,
   resolveVaultDirectory,
   resolveVaultPath,
   VaultRoot,
@@ -75,10 +81,14 @@ export type VaultSearchPageResult = ResultType<NoteSearchPage, DiscoveryError | 
 export type VaultCreateResult = ResultType<NoteReference, CreateNoteError>;
 /** Result of atomically editing one existing note. */
 export type VaultEditResult = ResultType<NoteReference, EditNoteError | VaultNoteError>;
+/** Result of moving or renaming one note without overwriting its destination. */
+export type VaultMoveResult = ResultType<NoteReference, MoveNoteError>;
+/** Result of deleting one existing note. */
+export type VaultDeleteResult = ResultType<NoteReference, DeleteNoteError>;
 /** Result of recursively listing supported notes. */
 export type VaultListResult = ResultType<NoteReference[], DiscoveryError>;
-/** Result of recursively discovering supported notes and vault directories. */
-export type VaultDiscoveryResult = ResultType<VaultEntries, DiscoveryError>;
+/** Result of recursively discovering supported notes and vault directories in an optional folder. */
+export type VaultDiscoveryResult = ResultType<VaultEntries, DiscoveryError | VaultPathError>;
 
 /**
  * The high-level Hubble seam. Path security, note-format validation, and
@@ -92,7 +102,7 @@ export class Vault extends VaultRoot {
   private readonly fileSystem: NoteFileSystem | undefined;
   private discoveryRevision = 0;
 
-  /** Changes after successful creation so autocomplete can immediately refresh its note list. */
+  /** Changes after successful note mutations so autocomplete can immediately refresh its entries. */
   get discoveryVersion(): number {
     return this.discoveryRevision;
   }
@@ -115,9 +125,20 @@ export class Vault extends VaultRoot {
     return listNoteFiles(this, this.fileSystem, signal);
   }
 
-  /** Discovers supported notes and all safe directories currently stored in the vault. */
+  /** Discovers every supported note and safe directory currently stored in the vault. */
   async discover(signal?: AbortSignal): Promise<VaultDiscoveryResult> {
     return discoverVaultEntries(this, this.fileSystem, signal);
+  }
+
+  /** Discovers supported notes and safe directories recursively within one folder scope. */
+  async discoverInFolder(folder: string, signal?: AbortSignal): Promise<VaultDiscoveryResult> {
+    const directory = await resolveVaultDirectory(this, folder);
+
+    if (Result.isError(directory)) {
+      return directory;
+    }
+
+    return discoverVaultEntries(this, this.fileSystem, signal, directory.value);
   }
 
   /** Searches every supported note's raw text for case-insensitive line matches. */
@@ -280,6 +301,89 @@ export class Vault extends VaultRoot {
       return edited;
     }
 
+    return Result.ok(resolved.value);
+  }
+
+  /**
+   * Moves or renames a note, creating missing parent folders without overwriting.
+   * Returns structured path, validation, read, conflict, or storage failures.
+   */
+  async move(path: string, destination: string, signal?: AbortSignal): Promise<VaultMoveResult> {
+    const source = await resolveVaultPath(this, path);
+
+    if (Result.isError(source)) {
+      return source;
+    }
+
+    const supportedSource = noteFormat(source.value);
+
+    if (Result.isError(supportedSource)) {
+      return supportedSource;
+    }
+
+    const target = await resolveVaultPath(this, destination);
+
+    if (Result.isError(target)) {
+      return target;
+    }
+
+    const supportedTarget = noteFormat(target.value);
+
+    if (Result.isError(supportedTarget)) {
+      return supportedTarget;
+    }
+
+    if (source.value.absolute === target.value.absolute) {
+      return Result.err(
+        new NoteValidationError({
+          reason: "destination",
+          path: target.value.relative,
+          message: "The Hubble move destination must differ from its source.",
+        })
+      );
+    }
+
+    if (supportedSource.value !== supportedTarget.value) {
+      return Result.err(
+        new NoteValidationError({
+          reason: "format",
+          path: target.value.relative,
+          message: "A Hubble note move cannot change the note format.",
+        })
+      );
+    }
+
+    const moved = await moveVaultFile(this, source.value, target.value, signal, this.fileSystem);
+
+    if (Result.isError(moved)) {
+      return moved;
+    }
+
+    this.discoveryRevision++;
+    return Result.ok(target.value);
+  }
+
+  /** Permanently deletes one supported vault note, returning structured path, read, conflict, or storage failures. */
+  async delete(path: string, signal?: AbortSignal): Promise<VaultDeleteResult> {
+    const resolved = await resolveVaultPath(this, path);
+
+    if (Result.isError(resolved)) {
+      return resolved;
+    }
+
+    const supported = assertNotePath(resolved.value);
+
+    if (Result.isError(supported)) {
+      return supported;
+    }
+
+    const deleted = await deleteVaultFile(this, resolved.value, signal, this.fileSystem);
+
+    if (Result.isError(deleted)) {
+      return deleted;
+    }
+
+    this.discoveryRevision++;
     return Result.ok(resolved.value);
   }
 }

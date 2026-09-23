@@ -1,6 +1,6 @@
 # pi-hubble
 
-Pi package for searching, reading, creating, and editing Markdown and HTML notes in [Hubble.md](https://hubble.md). It bundles the extension and Hubble's upstream HTML App skill.
+Pi package for searching, reading, creating, editing, moving, and deleting Markdown and HTML notes in [Hubble.md](https://hubble.md). It bundles the extension and Hubble's upstream HTML App skill.
 
 ## Install
 
@@ -75,8 +75,9 @@ current working directory.
 
 The extension registers these Pi tools:
 
-- `hubble_list()` lists existing vault directories and supported notes. Directory
-  paths end with `/`.
+- `hubble_list(folder?)` lists existing vault directories and supported notes,
+  optionally restricted recursively to a vault-relative folder. `folder` accepts a
+  plain path or an `@hubble/<folder>/` reference. Directory paths end with `/`.
 - `hubble_search(query, folder?, limit?, offset?)` searches note contents case-insensitively and
   returns matching lines. `folder` recursively restricts results to a vault-relative
   folder and accepts either a plain path or an `@hubble/<folder>/` reference. `limit`
@@ -94,6 +95,12 @@ The extension registers these Pi tools:
 - `hubble_edit(path, edits)` applies one or more exact, unique,
   non-overlapping text replacements to Markdown or HTML. Every edit is matched
   against the original note rather than the result of an earlier replacement.
+  Missing matches that differ only in horizontal whitespace report line and
+  column context with visible spaces, tabs, and newlines.
+- `hubble_move(path, destination)` moves or renames a note without overwriting.
+  `destination` is a complete vault-relative note path, missing parent folders
+  are created, and the destination must preserve the source format.
+- `hubble_delete(path)` permanently deletes one supported note.
 
 All document paths are relative to the configured vault and must use `.md` or
 `.html` (case-insensitively). Search operates line-by-line on note source, so
@@ -112,14 +119,11 @@ wraps `content` as a body fragment in a valid standalone document. In Pi's TUI,
 create calls show a syntax-highlighted document preview that can be expanded
 with the normal tool expansion keybinding.
 
-Writes are serialized with Pi's file mutation queue. Creation also holds the destination file's queue so concurrent Pi reads and edits wait for the complete note or its failure cleanup. Existing notes are edited
-by writing and syncing a same-directory temporary file, closing it, and
-atomically renaming it over the original so a failed edit cannot truncate the
-note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
+Mutations are serialized with Pi's file mutation queue. Creation also holds the destination file's queue so concurrent Pi reads and edits wait for the complete note or its failure cleanup. Moves hold the vault, source, and destination queues, safely create missing parent folders, refuse existing destinations, and roll back the linked destination if source removal fails. Existing notes are edited by writing and syncing a same-directory temporary file, closing it, and atomically renaming it over the original so a failed edit cannot truncate the note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
 are checked against path traversal and symlink escapes, and note discovery
 recursively scans the vault while skipping symlinks. Hubble's internal root
 `.hubble` metadata directory is reserved: discovery skips it and direct note
-operations reject it. Discovery revalidates the root, directories, and note
+operations reject it. Discovery revalidates the root, scoped directory, child directories, and note
 paths so replacements after opening the vault are rejected. Creation also
 revalidates newly opened files before writing content, preventing a replaced
 parent directory from redirecting note contents outside the vault.
