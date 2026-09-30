@@ -38,7 +38,7 @@
     "@earendil-works/pi-ai": "^0.84.3",
     "@earendil-works/pi-coding-agent": "^0.84.3",
     "@earendil-works/pi-tui": "^0.84.4",
-    "@oxlint/plugins": "^1.81.0",
+    "@oxlint/plugins": "^1.85.0",
     "@types/node": "^26.5.1",
     "oxfmt": "^0.68.0",
     "oxlint": "^1.83.0",
