@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -309,5 +309,66 @@ test("refreshes forced completion and creations while safely caching ordinary lo
     expect((await suggestions())?.items).toEqual([]);
   } finally {
     await fs.rm(base, { recursive: true, force: true });
+  }
+});
+
+test("treats scoped paths as directory navigation, not whole-path fuzzy tokens", async () => {
+  const root = await mkdtemp(join(tmpdir(), "hubble-autocomplete-todo-"));
+  const tickets = "jer-k/effect-prophet/tickets";
+  await mkdir(join(root, tickets, "TODO", "nested"), { recursive: true });
+  await mkdir(join(root, tickets, "DONE"), { recursive: true });
+  await mkdir(join(root, "jer-k", "other-project", "tickets", "TODO"), { recursive: true });
+  await writeFile(join(root, tickets, "TODO", "EP-097-linear-stan-map-stationarity-acceptance.md"), "ticket");
+  await writeFile(join(root, tickets, "TODO", "EP-098.md"), "ticket");
+  await writeFile(join(root, tickets, "TODO", "nested", "hidden.md"), "nested");
+  await writeFile(join(root, "jer-k", "other-project", "tickets", "TODO", "EP-097-other.md"), "other");
+  for (let index = 0; index < 65; index++) {
+    await writeFile(join(root, tickets, "DONE", `EP-${index}-todo-completed.md`), "done");
+  }
+
+  try {
+    const opened = await openVault(root);
+    const { pi, getSessionStart } = createPi();
+    registerHubbleAutocomplete(pi, async () => opened);
+    let factory: AutocompleteProviderFactory | undefined;
+    const context = {
+      hasUI: true,
+      ui: {
+        addAutocompleteProvider(value: AutocompleteProviderFactory) {
+          factory = value;
+        },
+      },
+    };
+    getSessionStart()?.(sessionStartEvent, testCast<typeof context, ExtensionContext>(context));
+
+    if (!factory) throw new Error("Expected provider");
+
+    const provider = factory({
+      getSuggestions: async () => null,
+      applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+    });
+    const labels = async (prefix: string) =>
+      (await provider.getSuggestions([prefix], 0, prefix.length, { signal: new AbortController().signal }))?.items.map(
+        (item) => item.label
+      );
+    expect(await labels(`@hubble/${tickets}/TODO`)).toEqual(["TODO/"]);
+    expect(await labels(`@hubble/${tickets}/TODO/`)).toEqual([
+      "EP-097-linear-stan-map-stationarity-acceptance.md",
+      "EP-098.md",
+      "nested/",
+    ]);
+    expect(await labels(`@hubble/${tickets}/TODO/EP-097`)).toEqual([
+      "EP-097-linear-stan-map-stationarity-acceptance.md",
+    ]);
+    expect(await labels(`@hubble/${tickets}/TODO/stationarity`)).toEqual([
+      "EP-097-linear-stan-map-stationarity-acceptance.md",
+    ]);
+    expect(await labels(`@hubble/${tickets}/todo/EP-097`)).toEqual([
+      "EP-097-linear-stan-map-stationarity-acceptance.md",
+    ]);
+    expect(await labels(`@hubble/${tickets}/TODO/nested/`)).toEqual(["hidden.md"]);
+    expect(await labels(`@hubble/${tickets}/MISSING/`)).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

@@ -15,9 +15,19 @@ test("restricts paged search recursively to a safely resolved folder", async () 
     await fs.writeFile(join(root, "tickets", "direct.md"), "flat growth direct");
     await fs.writeFile(join(root, "tickets", "TODO", "nested.md"), "flat growth nested");
     await fs.writeFile(join(root, "outside.md"), "flat growth outside");
+    await fs.mkdir(join(root, "unrelated"));
+    await fs.writeFile(join(root, "unrelated", "note.md"), "flat growth unrelated");
     await fs.symlink(outside, join(root, "external"), "dir");
+    const scanCause = Object.assign(new Error("unrelated directory is unreadable"), { code: "EACCES" });
     const opened = await Vault.open(root, {
       ...fs,
+      async readdir(path, options) {
+        if (path.endsWith("/unrelated")) {
+          throw scanCause;
+        }
+
+        return fs.readdir(path, options);
+      },
       async readFile(path, encoding) {
         if (path.endsWith("outside.md")) {
           throw new Error("out-of-scope note must not be read");
@@ -50,6 +60,22 @@ test("restricts paged search recursively to a safely resolved folder", async () 
     expect(await opened.value.searchPage("match", { folder: "external", offset: 1, limit: 1 })).toMatchObject({
       status: "error",
       error: { _tag: "VaultPathError", reason: "symlink-escape" },
+    });
+    expect(await opened.value.searchPage("flat growth", { folder: "unrelated", offset: 1, limit: 1 })).toMatchObject({
+      status: "error",
+      error: { _tag: "VaultDiscoveryError", reason: "scan", cause: scanCause },
+    });
+    expect(await opened.value.search("flat growth")).toMatchObject({
+      status: "error",
+      error: { _tag: "VaultDiscoveryError", reason: "scan", cause: scanCause },
+    });
+    expect(await opened.value.searchPage("flat growth", { folder: "missing", offset: 1, limit: 1 })).toMatchObject({
+      status: "error",
+      error: {
+        _tag: "VaultDiscoveryError",
+        reason: "scan",
+        cause: { _tag: "MissingFileError", cause: { code: "ENOENT" } },
+      },
     });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -108,3 +134,57 @@ test("stops reading after page lookahead and preserves unbounded search behavior
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test.each(["scope", "child"] as const)(
+  "scoped search rejects a %s replaced by an external symlink during discovery",
+  async (target) => {
+    const base = await fs.mkdtemp(join(tmpdir(), "hubble-search-scope-race-"));
+    const root = join(base, "vault");
+    const scope = join(root, "tickets");
+    const child = join(scope, "TODO");
+    const outside = join(base, "outside");
+    await fs.mkdir(child, { recursive: true });
+    await fs.mkdir(outside);
+    await fs.writeFile(join(child, "note.md"), "match safe");
+    await fs.writeFile(join(outside, "private.md"), "match private");
+    let replaced = false;
+    const replace = async (path: string) => {
+      replaced = true;
+      await fs.rename(path, join(root, "original"));
+      await fs.symlink(outside, path);
+    };
+    try {
+      const opened = await Vault.open(root, {
+        ...fs,
+        async stat(path) {
+          const metadata = await fs.stat(path);
+
+          if (!replaced && target === "scope" && path.endsWith("/tickets")) {
+            await replace(scope);
+          }
+
+          return metadata;
+        },
+        async readdir(path, options) {
+          const entries = await fs.readdir(path, options);
+
+          if (!replaced && target === "child" && path.endsWith("/tickets")) {
+            await replace(child);
+          }
+
+          return entries;
+        },
+      });
+
+      if (opened.status === "error") throw opened.error;
+
+      expect(await opened.value.searchPage("match", { folder: "tickets", offset: 1, limit: 1 })).toMatchObject({
+        status: "error",
+        error: { _tag: "VaultDiscoveryError", reason: "unsafe-path" },
+      });
+      expect(await fs.readFile(join(outside, "private.md"), "utf8")).toBe("match private");
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  }
+);

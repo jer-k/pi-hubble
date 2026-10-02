@@ -112,7 +112,25 @@ async function autocompleteItems(vault: Vault, entries: VaultEntries, query: str
     ...entries.directories.map((reference) => ({ kind: "directory", reference }) as const),
     ...entries.notes.map((reference) => ({ kind: "note", reference }) as const),
   ].sort((left, right) => entryPath(left).localeCompare(entryPath(right)));
-  const matching = query ? fuzzyFilter(candidates, query, entryPath) : candidates;
+  const slashIndex = query.lastIndexOf("/");
+  const directoryPrefix = query.slice(0, slashIndex + 1);
+  const nameQuery = query.slice(slashIndex + 1);
+
+  // Slashes are navigation boundaries, not fuzzy-search tokens. Match only
+  // direct children once a directory is typed, so a large sibling subtree
+  // cannot crowd the intended folder's notes out of the capped popup.
+  const scoped = directoryPrefix
+    ? candidates.filter((entry) => {
+        const path = entryPath(entry);
+        const remainder = path.slice(directoryPrefix.length).replace(/\/$/u, "");
+        return (
+          path.toLowerCase().startsWith(directoryPrefix.toLowerCase()) && remainder !== "" && !remainder.includes("/")
+        );
+      })
+    : candidates;
+  const matching = nameQuery
+    ? fuzzyFilter(scoped, nameQuery, (entry) => entryPath(entry).slice(directoryPrefix.length))
+    : scoped;
   const safe: HubbleAutocompleteEntry[] = [];
 
   for (const entry of matching) {
