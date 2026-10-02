@@ -205,6 +205,13 @@ export function throwHubbleError(error: HubbleFailure): never {
   throw new Error(error.message, { cause: error });
 }
 
+/** A benchmark argument, scratch-filesystem, SDK runtime, or measured-operation failure. */
+export class BenchmarkError extends TaggedError("BenchmarkError")<{
+  readonly reason: "arguments" | "filesystem" | "runtime" | "operation" | "verification";
+  readonly cause?: unknown;
+  readonly message: string;
+}> {}
+
 /** A recoverable CLI, Git, filesystem, or upstream-content failure while syncing vendored skills. */
 export class SkillSyncError extends TaggedError("SkillSyncError")<{
   readonly reason: "arguments" | "git" | "filesystem" | "upstream-entry" | "different" | "rollback";

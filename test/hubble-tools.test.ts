@@ -1,13 +1,15 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { expect, test } from "vitest";
 
 import type { GetVault } from "../extensions/hubble-config.ts";
-import { registerHubbleTools } from "../extensions/hubble-tools.ts";
+import { type OutputFileSystem, registerHubbleTools } from "../extensions/hubble-tools.ts";
 import { openVault } from "../extensions/hubble-vault.ts";
 import { testCast } from "./test-cast.ts";
 
@@ -52,14 +54,14 @@ type HubbleCreateRenderArguments = {
   readonly format?: "markdown" | "html";
 };
 
-function register(getVault: GetVault): RegisteredHubbleTools {
+function register(getVault: GetVault, outputFileSystem?: OutputFileSystem): RegisteredHubbleTools {
   const tools: Partial<Record<HubbleToolName, RegisteredTestTool>> = {};
   const pi = {
     registerTool(tool: RegisteredTestTool & { name: HubbleToolName }) {
       tools[tool.name] = tool;
     },
   };
-  registerHubbleTools(testCast<typeof pi, ExtensionAPI>(pi), getVault);
+  registerHubbleTools(testCast<typeof pi, ExtensionAPI>(pi), getVault, outputFileSystem);
 
   const registeredTool = (name: HubbleToolName): RegisteredTestTool => {
     const tool = tools[name];
@@ -513,3 +515,69 @@ test("reports omitted search matches and allows retrieving every page", async ()
   const end = await tools.hubble_search.execute("page", { query: "match", offset: 5 }, undefined, undefined, context);
   expect(firstText(end)).toBe("No more Hubble matches at this offset.");
 });
+
+test.each(["hubble_list", "hubble_search", "hubble_read"] as const)(
+  "%s persists oversized responses through the supplied filesystem and preserves its failures",
+  async (name) => {
+    const base = await mkdtemp(join(tmpdir(), "hubble-tool-output-"));
+    const root = join(base, "vault");
+    await mkdir(root);
+    const content = "# Long response\n\noutput-needle " + "x".repeat(65_536);
+    await writeFile(join(root, "long.md"), content);
+
+    if (name === "hubble_list") {
+      for (let index = 0; index < 2_001; index++) {
+        await writeFile(join(root, `fixture-${index}.md`), "fixture");
+      }
+    }
+
+    try {
+      const opened = await openVault(root);
+      const args =
+        name === "hubble_list" ? {} : name === "hubble_search" ? { query: "output-needle" } : { path: "long.md" };
+      const tools = register(async () => opened, {
+        mkdtemp: () => mkdtemp(join(base, "output-")),
+        writeFile,
+      });
+      const result = await tools[name].execute("oversized", args, undefined, undefined, context);
+      const detailsSchema = Type.Object(
+        { truncated: Type.Literal(true), fullOutputPath: Type.String() },
+        { additionalProperties: true }
+      );
+      expect(Value.Check(detailsSchema, result.details)).toBe(true);
+
+      if (!Value.Check(detailsSchema, result.details)) {
+        throw new Error("Expected persisted-output details");
+      }
+
+      expect(result.details.fullOutputPath.startsWith(join(base, "output-"))).toBe(true);
+      const output = await readFile(result.details.fullOutputPath, "utf8");
+      if (name !== "hubble_list") {
+        expect(output.length).toBeGreaterThan(50_000);
+      }
+
+      if (name === "hubble_read") {
+        expect(output).toBe(content);
+      } else if (name === "hubble_search") {
+        expect(output).toBe(`long.md:3: output-needle ${"x".repeat(65_536)}`);
+      } else {
+        expect(output.split("\n")).toHaveLength(2_002);
+        expect(output).toContain("fixture-2000.md");
+      }
+
+      const cause = Object.assign(new Error("output permission denied"), { code: "EACCES" });
+      const failingTools = register(async () => opened, {
+        async mkdtemp() {
+          throw cause;
+        },
+        writeFile,
+      });
+      await expect(
+        failingTools[name].execute("oversized-failure", args, undefined, undefined, context)
+      ).rejects.toMatchObject({ cause: { _tag: "OutputPersistenceError", cause } });
+      expect(await readFile(join(root, "long.md"), "utf8")).toBe(content);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  }
+);

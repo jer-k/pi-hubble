@@ -578,10 +578,19 @@ export async function writeNewVaultFile(
     const extension = destination.value.format === "html" ? ".html" : ".md";
     const body = buildNewNoteDocument(trimmedTitle, content, destination.value.format);
     const maximumAttempts = destination.value.filename === undefined ? 10_000 : 1;
+    let occupiedNames: ReadonlySet<string> | undefined;
+    let triedDirectorySnapshot = false;
 
     for (let suffix = 0; suffix < maximumAttempts; suffix++) {
       const candidateFilename =
         destination.value.filename ?? `${slug}${suffix === 0 ? "" : `-${suffix + 1}`}${extension}`;
+
+      // The snapshot is only a hint: exclusive open below remains authoritative
+      // when another process creates a name after this directory was read.
+      if (occupiedNames?.has(candidateFilename)) {
+        continue;
+      }
+
       const requestedPath = safeDirectory.relative
         ? `${safeDirectory.relative}/${candidateFilename}`
         : candidateFilename;
@@ -679,6 +688,33 @@ export async function writeNewVaultFile(
         destination.value.filename === undefined &&
         ExistingFileError.is(attempt.error.cause)
       ) {
+        if (!triedDirectorySnapshot) {
+          triedDirectorySnapshot = true;
+          const checkedDirectory = await resolveVaultDirectory(vault, requestedFolder);
+
+          if (Result.isError(checkedDirectory)) {
+            return checkedDirectory;
+          }
+
+          const names = await Result.tryPromise({
+            try: () => fileSystem.readdir(checkedDirectory.value.absolute, { withFileTypes: true }),
+            catch: (cause) =>
+              new NoteWriteError({
+                operation: "create",
+                path: safeDirectory.relative,
+                title: trimmedTitle,
+                cause: mapFileSystemError(checkedDirectory.value.absolute, cause),
+                message: "Could not inspect occupied Hubble note filenames.",
+              }),
+          });
+
+          // Reading a directory is optional: write-only directories and transient
+          // scan failures retain the original exclusive-open collision fallback.
+          if (Result.isOk(names)) {
+            occupiedNames = new Set(names.value.map((entry) => entry.name));
+          }
+        }
+
         continue;
       }
 

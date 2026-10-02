@@ -85,7 +85,8 @@ The extension registers these Pi tools:
   notice and `nextOffset`; pass that value with the same query and folder as the
   1-based matching-line `offset` to retrieve the next page. Pages reflect the current
   vault, so concurrent note changes can shift their offsets. Tool searches stop after
-  the page and one lookahead match, retaining only that page.
+  the page and one lookahead match, retaining only that page. With `folder`, both
+  discovery and note reads stay inside that subtree; unrelated folders are not scanned.
 - `hubble_read(path, offset?, limit?)` reads a vault-relative Markdown or HTML
   path. `offset` is a 1-based line number; `limit` controls the number of lines.
 - `hubble_create(title, content, filename?, folder?, format?)` creates a new
@@ -111,13 +112,18 @@ through `hasMore`/`nextOffset` and `fullOutputPath`.
 
 When `filename` is omitted, `hubble_create` converts the title into a filename
 slug and resolves collisions with names such as `my-note-2.md` or
-`my-note-2.html`. When provided, `filename` must be a basename ending in `.md`
+`my-note-2.html`. After a collision, a directory snapshot skips occupied names;
+exclusive file creation still prevents overwrites, including concurrent external
+creates. If the directory cannot be read, creation falls back to exclusive-open
+retries. When provided, `filename` must be a basename ending in `.md`
 or `.html`; it is used exactly, its extension determines the format when
 `format` is omitted, and creation fails if it already exists. Markdown creation
 preserves the `# Title` heading behavior. HTML creation escapes the title and
 wraps `content` as a body fragment in a valid standalone document. In Pi's TUI,
 create calls show a syntax-highlighted document preview that can be expanded
-with the normal tool expansion keybinding.
+with the normal tool expansion keybinding. Collapsed previews highlight only the
+visible ten lines; unchanged document highlights and layouts are cached per tool
+call instead of being recomputed on every streamed update.
 
 Mutations are serialized with Pi's file mutation queue. Creation also holds the destination file's queue so concurrent Pi reads and edits wait for the complete note or its failure cleanup. Moves hold the vault, source, and destination queues, safely create missing parent folders, refuse existing destinations, and roll back the linked destination if source removal fails. Existing notes are edited by writing and syncing a same-directory temporary file, closing it, and atomically renaming it over the original so a failed edit cannot truncate the note. Edits check for external content or metadata changes before committing and report a conflict so the agent can reread and retry. This optimistic check cannot lock out a Hubble save between the final check and rename. Edits preserve UTF-8 BOMs, line-ending style, and file permissions. Paths
 are checked against path traversal and symlink escapes, and note discovery
@@ -138,8 +144,12 @@ parent directory from redirecting note contents outside the vault.
   to one second, while explicit Tab completion always rescans so paths added elsewhere during the
   session appear immediately. Discovery is also refreshed after this extension
   creates a note. Suggested paths are rechecked even when cached. After typing
-  a folder prefix, suggestions show only the remaining path so endings remain
-  visible
+  a folder prefix, suggestions show only that directory's direct children and
+  display the remaining path so endings remain visible. Directory segments match
+  literally (case-insensitively); only the final name is fuzzy-matched.
+  `@hubble/jer-k/effect-prophet/tickets/TODO` suggests `TODO/`; append `/` to see
+  its notes, without results from sibling `DONE/` folders. Unscoped name searches
+  such as `@hubble/stationarity` still search across the vault
 - `/hubble find <query>` to find note filenames explicitly
 - `/hubble search <query>` to search note contents
 - `/hubble new [title] [--format markdown|html] [--folder <folder>]` to create
@@ -172,6 +182,51 @@ Run the Pi CLI integration smoke test separately:
 ```bash
 npm run test:integration
 ```
+
+### Tool benchmarks
+
+```bash
+npm run bench:tools
+npm run bench:tools -- --iterations 10 --notes 1000
+npm run bench:tools -- --source /path/to/EP-097-linear-stan-map-stationarity-acceptance.md
+```
+
+This runs **25 scenarios across all seven tools** through their bound Pi SDK
+handlers: whole/scoped listings, paginated/no-match searches, full/windowed reads,
+Markdown/HTML creation, atomic editing, moving, deletion, oversized response
+persistence, and structured failures. The default corpus has 100 synthetic
+23,688-byte notes; `--notes` accepts 1–5000. `--iterations` defaults to 30 and
+accepts 1–1000. Results include median and p95 latency after two warmups.
+
+Input preparation/validation, handler execution, formatting, and output
+persistence are timed. Setup/reset, verification, SDK startup, rendering, model
+and network time are excluded. No API credentials are required. All notes and
+oversized output files stay in an isolated scratch workspace and are removed
+afterward. `--temp-parent DIRECTORY` selects its filesystem; `--source FILE` is
+read-only and supplies the ticket-sized mutation/read payload, not the corpus.
+
+[Tool results and methodology](docs/benchmarks/tools.md) include 100- and
+1,000-note measurements and the resulting scoped-search optimization.
+
+### Write benchmarks
+
+```bash
+npm run bench:writes
+npm run bench:writes -- --iterations 30 --source /path/to/EP-097-linear-stan-map-stationarity-acceptance.md
+```
+
+The default is synthetic Markdown matching that ticket's original **23,688-byte** size.
+Benchmarks cover 1 KiB, ticket-sized, nested exact-filename, 256 KiB, and crowded
+slug creation, plus collapsed/expanded redraws and streamed preview rendering.
+They report median and p95 latency, verify persisted content outside the timer,
+and remove their isolated scratch vault afterward. `--source` reads your note
+without changing it. `--temp-parent DIRECTORY` places scratch storage on a
+particular filesystem; it never writes into your existing notes.
+
+These timings exclude model generation, network latency, and Pi startup. Local
+measurements found ordinary ticket-sized creation already below 1 ms; the
+optimizations target repeated rendering and filename collisions. See
+[measurement details and before/after results](docs/benchmarks/writes.md).
 
 Check whether the bundled skills match the latest upstream revision (requires network access and Git):
 

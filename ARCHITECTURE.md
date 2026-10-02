@@ -25,6 +25,7 @@ flowchart TD
     GetVault --> Config["hubble-config.ts: flag and config files"]
     GetVault --> Vault["hubble-vault.ts: Vault API"]
     Tools --> Vault
+    Tools --> Preview["hubble-create-preview.ts: cached visible document preview"]
     Command --> Vault
     Auto --> Vault
     Command --> UI["hubble-ui.ts: picker and attachment formatting"]
@@ -66,35 +67,41 @@ operations and format the results for the agent.
 | `@hubble/`       | Cached `discover` → fuzzy filtering → path revalidation         | Up to 50 notes or directories; notes attach normally and directories remain Hubble-relative destination references.  |
 
 Tool listings and searches can resolve a vault-relative folder scope. Scoped
-listings scan only that directory tree. Searches retain one page and stop reading
-after one additional match proves there is another page. They still discover
-safe note paths first, then read only notes inside the requested folder. Interactive
+listings and searches discover only that directory tree; unrelated folders are
+not traversed. Searches retain one page and stop reading after one additional
+match proves there is another page. They discover safe note paths before reading.
+Interactive
 content search uses the unbounded `search` method to populate the picker.
 Autocomplete discovers safe directories as well as supported notes, including
 empty directories. It caches ordinary discovery for up to one second. Explicit
 Tab completion bypasses that cache, and successful creation changes
 `Vault.discoveryVersion`, so both user-requested refreshes and extension-created
-notes appear on the next lookup.
+notes appear on the next lookup. Typed directory segments scope suggestions to
+literal direct children; only the final name uses fuzzy matching. Unscoped name
+queries still match across the vault.
 
 Search and read responses pass through `truncateOutput` in `hubble-tools.ts`.
 Pi's line and byte limits bound the text sent to the model; oversized output is
 saved through the injectable `OutputFileSystem` seam to a temporary file outside
-the vault. Pagination and output-size truncation are separate concerns.
+the vault. `registerHubbleTools` supplies that seam to list, search, and read; the
+all-tools benchmark routes output to its disposable workspace on the measured
+filesystem. Pagination and output-size truncation are separate concerns.
 
 ## Files and responsibilities
 
-| File                                                        | Owns                                                                                                                                   |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| [hubble.ts](extensions/hubble.ts)                           | Extension registration, lazy configuration, and shared `getVault` wiring.                                                              |
-| [hubble-config.ts](extensions/hubble-config.ts)             | Config parsing, project-trust handling, root precedence, and configuration errors.                                                     |
-| [hubble-tools.ts](extensions/hubble-tools.ts)               | Tool schemas, edit-argument compatibility, response formatting, output persistence, and create previews.                               |
-| [hubble-command.ts](extensions/hubble-command.ts)           | `/hubble` parsing, interactive prompts, note selection, and agent-assisted creation.                                                   |
-| [hubble-autocomplete.ts](extensions/hubble-autocomplete.ts) | Mention detection, note and directory completion, discovery caching, path revalidation, and delegation to Pi's other completions.      |
-| [hubble-ui.ts](extensions/hubble-ui.ts)                     | The filterable note picker and escaped attachment strings, using Pi's TUI components.                                                  |
-| [hubble-vault.ts](extensions/hubble-vault.ts)               | The shared note API and search orchestration. Callers use this instead of coordinating storage themselves.                             |
-| [hubble-paths.ts](extensions/hubble-paths.ts)               | Canonical roots, vault-relative path resolution, symlink containment, supported formats, and branded `HubblePath` values.              |
-| [hubble-notes.ts](extensions/hubble-notes.ts)               | Pure document/slug/edit helpers alongside filesystem operations, queues, atomic replacement, and the injectable `NoteFileSystem` seam. |
-| [hubble-errors.ts](extensions/hubble-errors.ts)             | Tagged storage, path, validation, conflict, and skill-sync errors; filesystem error mapping; `throwHubbleError`.                       |
+| File                                                            | Owns                                                                                                                                   |
+| --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| [hubble.ts](extensions/hubble.ts)                               | Extension registration, lazy configuration, and shared `getVault` wiring.                                                              |
+| [hubble-config.ts](extensions/hubble-config.ts)                 | Config parsing, project-trust handling, root precedence, and configuration errors.                                                     |
+| [hubble-tools.ts](extensions/hubble-tools.ts)                   | Tool schemas, edit-argument compatibility, response formatting, output persistence, and renderer wiring.                               |
+| [hubble-create-preview.ts](extensions/hubble-create-preview.ts) | Per-tool-row document, visible-prefix highlight, and layout caches for streamed/expanded create previews.                              |
+| [hubble-command.ts](extensions/hubble-command.ts)               | `/hubble` parsing, interactive prompts, note selection, and agent-assisted creation.                                                   |
+| [hubble-autocomplete.ts](extensions/hubble-autocomplete.ts)     | Mention detection, note and directory completion, discovery caching, path revalidation, and delegation to Pi's other completions.      |
+| [hubble-ui.ts](extensions/hubble-ui.ts)                         | The filterable note picker and escaped attachment strings, using Pi's TUI components.                                                  |
+| [hubble-vault.ts](extensions/hubble-vault.ts)                   | The shared note API and search orchestration. Callers use this instead of coordinating storage themselves.                             |
+| [hubble-paths.ts](extensions/hubble-paths.ts)                   | Canonical roots, vault-relative path resolution, symlink containment, supported formats, and branded `HubblePath` values.              |
+| [hubble-notes.ts](extensions/hubble-notes.ts)                   | Pure document/slug/edit helpers alongside filesystem operations, queues, atomic replacement, and the injectable `NoteFileSystem` seam. |
+| [hubble-errors.ts](extensions/hubble-errors.ts)                 | Tagged storage, path, validation, conflict, benchmark, and skill-sync errors; filesystem error mapping; `throwHubbleError`.            |
 
 Expected failures travel as `Result<T, E>` values using `better-result`. Tool
 handlers convert them into Pi-compatible exceptions at `throwHubbleError`;
@@ -143,7 +150,10 @@ line-ending style.
 Discovery revalidates roots, directories, and note paths while skipping symlinks
 and Hubble's internal `.hubble` metadata directory. Direct path operations reject
 that reserved directory. Creation revalidates its folder after `mkdir` and its
-opened destination before writing note content.
+opened destination before writing note content. After a generated-name collision,
+an optional directory-name snapshot skips occupied suffixes. Exclusive open is
+still authoritative for every selected target; snapshot-read failures fall back
+to ordinary retries.
 
 These are in-process queues shared with Pi, not locks acquired by Hubble.
 External-save detection is optimistic: another application can still save between
@@ -183,6 +193,15 @@ PR with upstream changes.
   Pi API fixtures at test boundaries.
 - [The integration suite](test/integration/pi-hubble.integration.test.ts) loads
   the package through Pi's CLI/RPC and SDK paths without an LLM or API credentials.
+- `scripts/benchmark-writes.ts` and `benchmark-tools.ts` are benchmark CLI boundaries.
+  `hubble-benchmark.ts` owns shared options, payloads, reporting, scratch cleanup,
+  and structured failures. `hubble-write-benchmark.ts` measures storage/previews;
+  `hubble-tool-benchmark.ts` exercises every registered handler through an offline
+  Pi SDK session, including output persistence and structured failures.
+  `hubble-benchmark.test.ts`, `hubble-write-benchmark.test.ts`, and
+  `hubble-tool-benchmark.test.ts` cover those seams, alongside the collision/preview tests.
+  See [write measurements](docs/benchmarks/writes.md) and
+  [tool measurements](docs/benchmarks/tools.md) for methodology and results.
 - `tsconfig.json` enables strict type checking. `oxlint.config.ts` loads the custom
   rules in `tools/oxlint/anti-slop/`. `.github/workflows/` runs CI and skill sync;
   `AGENTS.md` and `.agents/skills/coding-standards/` describe repository conventions.

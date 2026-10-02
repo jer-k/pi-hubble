@@ -12,6 +12,8 @@
   "scripts": {
     "test": "vitest run --exclude=test/integration/**",
     "test:integration": "vitest run test/integration/pi-hubble.integration.test.ts",
+    "bench:writes": "node ./scripts/benchmark-writes.ts",
+    "bench:tools": "node ./scripts/benchmark-tools.ts",
     "lint": "oxlint .",
     "typecheck": "tsc --noEmit",
     "format": "oxfmt --write .",

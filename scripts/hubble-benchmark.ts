@@ -1,0 +1,187 @@
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { Result, type Result as ResultType } from "better-result";
+
+import { BenchmarkError } from "../extensions/hubble-errors.ts";
+import { buildNewNoteDocument } from "../extensions/hubble-notes.ts";
+
+/** Parsed benchmark settings; --notes controls the all-tools corpus, not the write microbenchmarks. */
+export interface BenchmarkOptions {
+  readonly iterations: number;
+  readonly notes: number;
+  readonly source: string | undefined;
+  readonly temporaryParent: string;
+}
+
+/** A document and the creation input that produces it, including its actual UTF-8 byte size. */
+export interface BenchmarkDocument {
+  readonly title: string;
+  readonly content: string;
+  readonly document: string;
+  readonly bytes: number;
+}
+
+/** Source/scratch filesystem seam used to exercise expected benchmark failures. */
+export type BenchmarkFileSystem = Pick<typeof fs, "readFile" | "mkdtemp" | "rm">;
+
+/** Parses shared CLI settings before I/O, returning an arguments BenchmarkError for unknown flags or invalid counts. */
+export function parseBenchmarkArguments(args: ReadonlyArray<string>): ResultType<BenchmarkOptions, BenchmarkError> {
+  let iterations = 30;
+  let notes = 100;
+  let source: string | undefined;
+  let temporaryParent = tmpdir();
+
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    const value = args[index + 1];
+
+    if (!value || !["--iterations", "--notes", "--source", "--temp-parent"].includes(flag ?? "")) {
+      return Result.err(
+        new BenchmarkError({
+          reason: "arguments",
+          message: "Expected --iterations N, --notes N, --source FILE, or --temp-parent DIRECTORY.",
+        })
+      );
+    }
+
+    if (flag === "--source") {
+      source = value;
+    } else if (flag === "--temp-parent") {
+      temporaryParent = value;
+    } else {
+      const count = Number(value);
+      const maximum = flag === "--notes" ? 5_000 : 1_000;
+
+      if (!Number.isSafeInteger(count) || count < 1 || count > maximum) {
+        return Result.err(
+          new BenchmarkError({ reason: "arguments", message: `${flag} must be between 1 and ${maximum}.` })
+        );
+      }
+
+      if (flag === "--notes") {
+        notes = count;
+      } else {
+        iterations = count;
+      }
+    }
+  }
+
+  return Result.ok({ iterations, notes, source, temporaryParent });
+}
+
+/** Builds mutually consistent creation input, expected Markdown output, and actual UTF-8 size. */
+export function benchmarkDocument(title: string, content: string): BenchmarkDocument {
+  const document = buildNewNoteDocument(title, content, "markdown");
+  return { title, content, document, bytes: Buffer.byteLength(document) };
+}
+
+/**
+ * Generates exact-size ASCII Markdown with headings, checklists, and fenced code, without private source contents.
+ * @throws If a caller supplies a non-integer size or a size too small for the title (a benchmark programmer defect).
+ */
+export function syntheticBenchmarkDocument(bytes = 23_688): BenchmarkDocument {
+  const title = "Write benchmark";
+  const header = `# ${title}\n\n`;
+  const section =
+    "## Investigation\n\n- [ ] Check success and structured failures.\n\n```ts\nconst result = await vault.create(title, content);\n```\n\n";
+  const bodyBytes = bytes - Buffer.byteLength(header);
+
+  if (!Number.isSafeInteger(bytes) || bodyBytes < 0) {
+    throw new Error("Benchmark document size must be a safe integer that accommodates its title.");
+  }
+
+  const content = section.repeat(Math.ceil(bodyBytes / section.length)).slice(0, bodyBytes);
+  return benchmarkDocument(title, content);
+}
+
+/** Converts expected source/scratch I/O failures into values with the failing path and preserved cause. */
+export function benchmarkFileOperation<T>(
+  path: string,
+  action: () => Promise<T>
+): Promise<ResultType<T, BenchmarkError>> {
+  return Result.tryPromise({
+    try: action,
+    catch: (cause) =>
+      new BenchmarkError({ reason: "filesystem", cause, message: `Benchmark filesystem operation failed: ${path}` }),
+  });
+}
+
+/** Formats nearest-rank median/p95 latency in milliseconds, without unstable timing gates. */
+export function benchmarkSummary(name: string, bytes: number, samples: ReadonlyArray<number>, width = 30): string {
+  const sorted = [...samples].sort((left, right) => left - right);
+  const percentile = (fraction: number) => (sorted[Math.ceil(sorted.length * fraction) - 1] ?? 0).toFixed(3);
+  return `${name.padEnd(width)} ${String(bytes).padStart(8)} ${percentile(0.5).padStart(10)} ${percentile(0.95).padStart(10)}`;
+}
+
+/**
+ * Parses CLI input, reads an optional source, and runs a benchmark in an isolated scratch workspace.
+ * Preserves a source H1, reports actual generated bytes, and removes scratch storage even after failure.
+ * Returns argument, filesystem, or action failures, preserving both action and cleanup causes if necessary.
+ */
+export async function runInBenchmarkWorkspace<T>(
+  args: ReadonlyArray<string>,
+  action: (
+    root: string,
+    document: BenchmarkDocument,
+    options: BenchmarkOptions
+  ) => Promise<ResultType<T, BenchmarkError>>,
+  fileSystem: BenchmarkFileSystem = fs
+): Promise<ResultType<T, BenchmarkError>> {
+  const parsed = parseBenchmarkArguments(args);
+
+  if (Result.isError(parsed)) {
+    return parsed;
+  }
+
+  const options = parsed.value;
+  const sourcePath = options.source;
+  let document = syntheticBenchmarkDocument();
+
+  if (sourcePath !== undefined) {
+    const read = await benchmarkFileOperation(sourcePath, () => fileSystem.readFile(sourcePath, "utf8"));
+
+    if (Result.isError(read)) {
+      return read;
+    }
+
+    const heading = read.value.match(/^# ([^\r\n]*)\r?\n(?:\r?\n)?/u);
+    const title = heading?.[1] ?? document.title;
+    const content = heading ? read.value.slice(heading[0].length) : read.value;
+    document = benchmarkDocument(title, content);
+  }
+
+  const scratch = await benchmarkFileOperation(options.temporaryParent, () =>
+    fileSystem.mkdtemp(join(options.temporaryParent, "pi-hubble-benchmark-"))
+  );
+
+  if (Result.isError(scratch)) {
+    return scratch;
+  }
+
+  let result: ResultType<T, BenchmarkError>;
+  let cleaned: ResultType<void, BenchmarkError>;
+  try {
+    result = await action(scratch.value, document, options);
+  } finally {
+    cleaned = await withFileMutationQueue(scratch.value, () =>
+      benchmarkFileOperation(scratch.value, () => fileSystem.rm(scratch.value, { recursive: true, force: true }))
+    );
+  }
+
+  if (Result.isError(cleaned)) {
+    return Result.err(
+      new BenchmarkError({
+        reason: "filesystem",
+        cause: Result.isError(result)
+          ? new AggregateError([result.error, cleaned.error], "Benchmark and cleanup failed")
+          : cleaned.error,
+        message: `Could not remove benchmark scratch directory: ${scratch.value}`,
+      })
+    );
+  }
+
+  return result;
+}

@@ -8,8 +8,6 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
-  highlightCode,
-  keyHint,
   truncateHead,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -19,8 +17,8 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 
 import type { GetVault } from "./hubble-config.ts";
+import { renderCreatePreview } from "./hubble-create-preview.ts";
 import { type HubbleFailure, OutputPersistenceError, throwHubbleError } from "./hubble-errors.ts";
-import { buildNewNoteDocument } from "./hubble-notes.ts";
 import type { NoteSearchResult, SearchPageOptions, VaultEntries } from "./hubble-vault.ts";
 
 /** Filesystem operations used to persist truncated output and injectable in failure-path tests. */
@@ -118,11 +116,9 @@ const EditParameters = Type.Object({
   ),
 });
 
-type HubbleCreateArguments = Static<typeof CreateParameters>;
 type HubbleEditArguments = Static<typeof EditParameters>;
 type HubbleEditArgumentPreparer = NonNullable<ToolDefinition<typeof EditParameters>["prepareArguments"]>;
 
-const CREATE_PREVIEW_LINES = 10;
 const StringValue = Type.String();
 const UnpreparedHubbleEditParameters = Type.Object(
   {
@@ -255,8 +251,15 @@ function formatVaultEntries(entries: VaultEntries): string {
     .join("\n");
 }
 
-/** Registers Hubble discovery, reading, creation, editing, move, and deletion tools. */
-export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void {
+/**
+ * Registers Hubble tools, using the supplied filesystem to persist oversized responses.
+ * Expected Vault/output failures cross Pi's throwHubbleError boundary during execution.
+ */
+export function registerHubbleTools(
+  pi: ExtensionAPI,
+  getVault: GetVault,
+  outputFileSystem: OutputFileSystem = nodeFileSystem
+): void {
   pi.registerTool({
     name: "hubble_list",
     label: "Hubble List",
@@ -300,7 +303,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
         );
       }
 
-      const output = unwrap(await truncateOutput(listing));
+      const output = unwrap(await truncateOutput(listing, outputFileSystem));
       return noteResult(output.text, {
         folder: params.folder,
         noteCount: entries.notes.length,
@@ -352,7 +355,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
         );
       }
 
-      const output = unwrap(await truncateOutput(formatted.lines.join("\n")));
+      const output = unwrap(await truncateOutput(formatted.lines.join("\n"), outputFileSystem));
 
       const nextOffset = searched.hasMore ? offset + formatted.count : undefined;
       const continuationScope = params.folder === undefined ? "query" : "query and folder";
@@ -396,7 +399,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       const allLines = read.content.split("\n");
       const start = (params.offset ?? 1) - 1;
       const selected = params.limit === undefined ? allLines.slice(start) : allLines.slice(start, start + params.limit);
-      const output = unwrap(await truncateOutput(selected.join("\n")));
+      const output = unwrap(await truncateOutput(selected.join("\n"), outputFileSystem));
 
       return noteResult(`Path: ${read.note.relative}\n\n${output.text}`, {
         path: read.note.relative,
@@ -436,41 +439,7 @@ export function registerHubbleTools(pi: ExtensionAPI, getVault: GetVault): void 
       );
       return noteResult(`Created Hubble note: ${created.relative}`, { path: created.relative });
     },
-    /** Renders the generated document with syntax highlighting and expandable content. */
-    renderCall(args, theme, context) {
-      const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-      const partialArgs: Partial<HubbleCreateArguments> = args;
-      const title = partialArgs.title ?? "";
-      const content = partialArgs.content;
-      const filename = partialArgs.filename ?? "";
-      const inferredFormat = filename.toLowerCase().endsWith(".html") ? "html" : "markdown";
-      const format = partialArgs.format === "html" ? "html" : inferredFormat;
-      const folder = partialArgs.folder?.trim() ?? "";
-      const destination = filename ? `${folder ? `${folder}/` : ""}${filename}` : folder ? `${folder}/` : "vault root";
-      const titleDisplay = title ? JSON.stringify(title) : "...";
-      let output = `${theme.fg("toolTitle", theme.bold("hubble_create"))} ${theme.fg("accent", titleDisplay)}`;
-      output += theme.fg("dim", ` → ${destination} (${format})`);
-
-      if (title && content !== undefined) {
-        const document = buildNewNoteDocument(title, content, format).replaceAll("\r", "").replaceAll("\t", "   ");
-        const highlighted = highlightCode(document, format);
-
-        while (highlighted.at(-1) === "") {
-          highlighted.pop();
-        }
-
-        const visible = context.expanded ? highlighted : highlighted.slice(0, CREATE_PREVIEW_LINES);
-        const remaining = highlighted.length - visible.length;
-        output += `\n\n${visible.join("\n")}`;
-
-        if (remaining > 0) {
-          output += `${theme.fg("muted", `\n... (${remaining} more lines, ${highlighted.length} total,`)} ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
-        }
-      }
-
-      component.setText(output);
-      return component;
-    },
+    renderCall: renderCreatePreview,
     /** Renders the resolved note path after success or the structured tool error after failure. */
     renderResult(result, _options, theme, context) {
       const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);

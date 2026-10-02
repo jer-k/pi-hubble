@@ -167,7 +167,7 @@ export class Vault extends VaultRoot {
     return this.scan(query, signal, page);
   }
 
-  /** Shares matching semantics between complete UI search and bounded tool pages without retaining skipped matches. */
+  /** Scans only the requested subtree, sharing UI/page matching semantics without retaining skipped matches. */
   private async scan(query: string, signal?: AbortSignal, page?: SearchPageOptions): Promise<VaultSearchPageResult> {
     const normalized = query.trim().toLowerCase();
 
@@ -181,14 +181,13 @@ export class Vault extends VaultRoot {
       return directory;
     }
 
-    const files = await this.list(signal);
+    const entries = await discoverVaultEntries(this, this.fileSystem, signal, directory?.value);
 
-    if (Result.isError(files)) {
-      return files;
+    if (Result.isError(entries)) {
+      return entries;
     }
 
-    const folderPrefix = directory?.value.relative ? `${directory.value.relative}/` : "";
-    const notes = folderPrefix ? files.value.filter((note) => note.relative.startsWith(folderPrefix)) : files.value;
+    const notes = entries.value.notes;
     const results: NoteSearchResult[] = [];
     let skipped = 0;
     let retained = 0;

@@ -783,6 +783,48 @@ test("registers working @hubble note lookups with Pi's autocomplete API", async 
         },
       ],
     });
+
+    // Exercise both crowded slug allocation and scoped filtering through the
+    // real extension runtime, with enough DONE notes to overflow the popup cap.
+    const create = getTool(session, "hubble_create");
+    const tickets = "jer-k/effect-prophet/tickets";
+    for (let index = 0; index < 65; index++) {
+      await create.execute(
+        `done-${index}`,
+        { title: "Completed TODO", content: `Done ${index}`, folder: `${tickets}/DONE` },
+        undefined,
+        undefined
+      );
+    }
+    const title = "Stationarity";
+    const content = "Investigation line\n".repeat(2_000).slice(0, 23_688 - `# ${title}\n\n`.length);
+    await create.execute(
+      "ticket-sized-create",
+      { title, content, folder: `${tickets}/TODO`, filename: "EP-097.md" },
+      undefined,
+      undefined
+    );
+    const stored = await readFile(join(vault, tickets, "TODO", "EP-097.md"), "utf8");
+    expect(Buffer.byteLength(stored)).toBe(23_688);
+    expect(stored).toBe(`# ${title}\n\n${content}`);
+    const folderPrefix = `@hubble/${tickets}/TODO`;
+    expect(
+      (await provider.getSuggestions([folderPrefix], 0, folderPrefix.length, { signal }))?.items.map(
+        (item) => item.label
+      )
+    ).toEqual(["TODO/"]);
+    const scopedPrefix = `${folderPrefix}/`;
+    expect(
+      (await provider.getSuggestions([scopedPrefix], 0, scopedPrefix.length, { signal }))?.items.map(
+        (item) => item.label
+      )
+    ).toEqual(["EP-097.md"]);
+    expect(await readFile(join(vault, tickets, "DONE", "completed-todo.md"), "utf8")).toBe(
+      "# Completed TODO\n\nDone 0"
+    );
+    expect(await readFile(join(vault, tickets, "DONE", "completed-todo-65.md"), "utf8")).toBe(
+      "# Completed TODO\n\nDone 64"
+    );
   } finally {
     session.dispose();
     await rm(workspace, { recursive: true, force: true });
