@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/bholmesdev/hubble-skills.git",
   "ref": "main",
-  "commit": "03c9c47226746ef777cd6a9afed1e32e95dccfa2",
+  "commit": "098b37df9c852aff23ce812c08187d781dd3d2c3",
   "skills": [
     "create-html-app"
   ]
